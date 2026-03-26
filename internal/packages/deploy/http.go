@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"railway_like/internal/httputil"
+	"github/nallanos/fire2/internal/httputil"
 
 	"github.com/go-chi/chi/v5"
 )

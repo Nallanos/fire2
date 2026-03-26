@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto"
 	"encoding/hex"
-	"railway_like/internal/modules/build"
+	"github/nallanos/fire2/internal/packages/build"
 )
 
 type Workflow struct {

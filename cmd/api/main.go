@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"railway_like/internal/app"
+	"github/nallanos/fire2/internal/app"
 )
 
 func main() {

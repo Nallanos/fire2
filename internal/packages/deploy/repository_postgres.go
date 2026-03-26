@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"railway_like/internal/db"
+	"github/nallanos/fire2/internal/db"
 )
 
 type PostgresRepository struct {

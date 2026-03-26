@@ -7,7 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"railway_like/internal/packages/build"
+	"github/nallanos/fire2/internal/packages/build"
 )
 
 type buildHTTPHandlers struct {

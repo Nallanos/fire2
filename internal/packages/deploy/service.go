@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"railway_like/internal/packages/docker"
+	"github/nallanos/fire2/internal/packages/docker"
 )
 
 type Service struct {

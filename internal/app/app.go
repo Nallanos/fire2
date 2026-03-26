@@ -7,8 +7,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
-	"railway_like/internal/db"
-	"railway_like/internal/packages/build"
+	"github/nallanos/fire2/internal/db"
+	"github/nallanos/fire2/internal/packages/build"
 )
 
 type App struct {
