@@ -5,24 +5,36 @@
 package db
 
 import (
+	"encoding/json"
 	"time"
 )
 
-type Build struct {
-	ID        string    `json:"id"`
-	Repo      string    `json:"repo"`
-	Ref       string    `json:"ref"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+type Sandbox struct {
+	ID         string    `json:"id"`
+	Runtime    string    `json:"runtime"`
+	Status     string    `json:"status"`
+	Ttl        int64     `json:"ttl"`
+	CreatedAt  time.Time `json:"created_at"`
+	Port       int32     `json:"port"`
+	PreviewUrl string    `json:"preview_url"`
+	Image      string    `json:"image"`
 }
 
-type Deployment struct {
+type Task struct {
+	ID        string          `json:"id"`
+	Payload   json.RawMessage `json:"payload"`
+	Type      string          `json:"type"`
+	SandboxID string          `json:"sandbox_id"`
+	WorkerID  string          `json:"worker_id"`
+	Status    string          `json:"status"`
+	CreatedAt time.Time       `json:"created_at"`
+}
+
+type Worker struct {
 	ID        string    `json:"id"`
-	BuildID   string    `json:"build_id"`
 	Status    string    `json:"status"`
-	ImageTag  string    `json:"image_tag"`
+	Address   string    `json:"address"`
+	Capacity  int32     `json:"capacity"`
+	Port      int32     `json:"port"`
 	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Port      string    `json:"port"`
 }

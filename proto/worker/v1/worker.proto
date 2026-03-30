@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package worker.v1;
+
+option go_package = "github/nallanos/fire2/gen/worker/v1;worker";
+
+import "google/protobuf/timestamp.proto";
+
+service WorkerService {
+  rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
+  rpc StopSandbox(StopSandboxRequest) returns (StopSandboxResponse);
+  rpc RemoveSandbox(RemoveSandboxRequest) returns (RemoveSandboxResponse);
+  rpc GetWorkerInfo(GetWorkerInfoRequest) returns (GetWorkerInfoResponse);
+}
+
+message Sandbox {
+  string id = 1;
+  string runtime = 2;
+  string status = 3;
+  int64 ttl = 4;
+  google.protobuf.Timestamp created_at = 5;
+  int32 port = 6;
+  string preview_url = 7;
+  string image = 8;
+}
+
+message CreateSandboxRequest {
+  string id = 1;
+  string runtime = 2;
+  string image = 3;
+  int32 port = 4;
+  int64 ttl = 5;
+  string preview_url = 6;
+}
+
+message CreateSandboxResponse {
+  Sandbox sandbox = 1;
+}
+
+message StopSandboxRequest {
+  string container_id = 1;
+}
+
+message StopSandboxResponse {}
+
+message RemoveSandboxRequest {
+  string container_id = 1;
+}
+
+message RemoveSandboxResponse {}
+
+message GetWorkerInfoRequest {}
+
+message GetWorkerInfoResponse {
+  string id = 1;
+  string address = 2;
+  string status = 3;
+  int32 cpu_budget = 4;
+  int32 mem_budget = 5;
+  int32 capacity = 6;
+  int32 cpu_usage = 7;
+  int32 mem_usage = 8;
+  google.protobuf.Timestamp last_heartbeat = 9;
+}

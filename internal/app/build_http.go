@@ -7,18 +7,18 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github/nallanos/fire2/internal/packages/build"
+	sandbox "github/nallanos/fire2/internal/packages/sandbox"
 )
 
-type buildHTTPHandlers struct {
-	svc *build.Service
+type sandboxHTTPHandlers struct {
+	svc *sandbox.Service
 }
 
-func newBuildHTTPHandlers(svc *build.Service) *buildHTTPHandlers {
-	return &buildHTTPHandlers{svc: svc}
+func newSandboxHTTPHandlers(svc *sandbox.Service) *sandboxHTTPHandlers {
+	return &sandboxHTTPHandlers{svc: svc}
 }
 
-func (h *buildHTTPHandlers) routes() http.Handler {
+func (h *sandboxHTTPHandlers) routes() http.Handler {
 	r := chi.NewRouter()
 
 	r.Post("/", h.create)
@@ -28,61 +28,62 @@ func (h *buildHTTPHandlers) routes() http.Handler {
 	return r
 }
 
-type createBuildRequest struct {
-	Repo string `json:"repo"`
-	Ref  string `json:"ref"`
+type createSandboxRequest struct {
+	Runtime    string `json:"runtime"`
+	TTL        int64  `json:"ttl"`
+	PreviewURL string `json:"preview_url"`
 }
 
-func (h *buildHTTPHandlers) create(w http.ResponseWriter, r *http.Request) {
-	var body createBuildRequest
+func (h *sandboxHTTPHandlers) create(w http.ResponseWriter, r *http.Request) {
+	var body createSandboxRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, build.ErrMsgInvalidJSON, http.StatusBadRequest)
+		http.Error(w, sandbox.ErrMsgInvalidJSON, http.StatusBadRequest)
 		return
 	}
-	if body.Repo == "" {
-		http.Error(w, build.ErrMsgRepoRequired, http.StatusBadRequest)
+	if body.Runtime == "" {
+		http.Error(w, sandbox.ErrMsgRuntimeRequired, http.StatusBadRequest)
 		return
 	}
-	if body.Ref == "" {
-		body.Ref = "main"
+	if body.TTL <= 0 {
+		body.TTL = 3600
 	}
 
-	b, err := h.svc.Create(r.Context(), build.CreateRequest{Repo: body.Repo, Ref: body.Ref})
+	sbx, err := h.svc.Create(r.Context(), sandbox.CreateRequest{Runtime: body.Runtime, TTL: body.TTL, PreviewURL: body.PreviewURL})
 	if err != nil {
-		http.Error(w, build.ErrMsgCreateBuildFailed, http.StatusInternalServerError)
+		http.Error(w, sandbox.ErrMsgCreateSandboxFailed, http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(b)
+	_ = json.NewEncoder(w).Encode(sbx)
 }
 
-func (h *buildHTTPHandlers) getByID(w http.ResponseWriter, r *http.Request) {
+func (h *sandboxHTTPHandlers) getByID(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if id == "" {
-		http.Error(w, build.ErrMsgIDRequired, http.StatusBadRequest)
+		http.Error(w, sandbox.ErrMsgIDRequired, http.StatusBadRequest)
 		return
 	}
 
-	b, err := h.svc.GetByID(r.Context(), id)
+	sbx, err := h.svc.GetByID(r.Context(), id)
 	if err != nil {
-		if errors.Is(err, build.ErrNotFound) {
-			http.Error(w, build.ErrMsgNotFound, http.StatusNotFound)
+		if errors.Is(err, sandbox.ErrNotFound) {
+			http.Error(w, sandbox.ErrMsgNotFound, http.StatusNotFound)
 			return
 		}
-		http.Error(w, build.ErrMsgFetchBuildFailed, http.StatusInternalServerError)
+		http.Error(w, sandbox.ErrMsgFetchSandboxFailed, http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(b)
+	_ = json.NewEncoder(w).Encode(sbx)
 }
 
-func (h *buildHTTPHandlers) list(w http.ResponseWriter, r *http.Request) {
+func (h *sandboxHTTPHandlers) list(w http.ResponseWriter, r *http.Request) {
 	items, err := h.svc.List(r.Context())
 	if err != nil {
-		http.Error(w, build.ErrMsgListBuildsFailed, http.StatusInternalServerError)
+		http.Error(w, sandbox.ErrMsgListSandboxesFailed, http.StatusInternalServerError)
 		return
 	}
 

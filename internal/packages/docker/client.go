@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
@@ -16,7 +17,7 @@ type Client struct {
 
 type ClientInterface interface {
 	PullImage(ctx context.Context, img string) error
-	CreateContainer(ctx context.Context, img string, hostPort string) (string, error)
+	CreateContainer(ctx context.Context, img string, hostPort string, id string) (string, error)
 	StartContainer(ctx context.Context, containerID string) error
 	StopContainer(ctx context.Context, containerID string) error
 	RemoveContainer(ctx context.Context, containerID string) error
@@ -41,11 +42,14 @@ func (c *Client) PullImage(ctx context.Context, img string) error {
 	return nil
 }
 
-func (c *Client) CreateContainer(ctx context.Context, img string, hostPort string) (string, error) {
+func (c *Client) CreateContainer(ctx context.Context, img string, hostPort string, id string) (string, error) {
 	config := &container.Config{
 		Image: img,
 		ExposedPorts: nat.PortSet{
 			"3000/tcp": struct{}{},
+		},
+		Labels: map[string]string{
+			"id": id,
 		},
 	}
 
@@ -84,4 +88,23 @@ func (c *Client) RemoveContainer(ctx context.Context, containerID string) error 
 func (c *Client) InspectImage(ctx context.Context, img string) error {
 	_, _, err := c.cli.ImageInspectWithRaw(ctx, img)
 	return err
+}
+
+func getContainerByLabel(ctx context.Context, cli *client.Client, labelKey string, labelValue string) (string, error) {
+	filterArgs := filters.NewArgs()
+	filterArgs.Add("label", labelKey+"="+labelValue)
+
+	containers, err := cli.ContainerList(ctx, container.ListOptions{
+		All:     true,
+		Filters: filterArgs,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	if len(containers) == 0 {
+		return "", nil // No container found with the specified label
+	}
+
+	return containers[0].ID, nil // Return the ID of the first matching container
 }

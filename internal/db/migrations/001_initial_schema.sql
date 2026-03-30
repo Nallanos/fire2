@@ -1,18 +1,19 @@
-CREATE TABLE builds (
+CREATE TABLE sandboxes (
     id TEXT PRIMARY KEY,
-    repo TEXT NOT NULL,
-    ref TEXT NOT NULL,
+    runtime TEXT NOT NULL,
     status TEXT NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ttl BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    port INT NOT NULL,
+    preview_url TEXT NOT NULL,
+    image TEXT NOT NULL
 );
 
-CREATE TABLE deployments (
+CREATE TABLE worker (
     id TEXT PRIMARY KEY,
-    build_id TEXT NOT NULL REFERENCES builds(id),
     status TEXT NOT NULL,
-    image_tag TEXT NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    port TEXT NOT NULL   
+    address TEXT NOT NULL,
+    Capacity INT NOT NULL,
+    port INT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

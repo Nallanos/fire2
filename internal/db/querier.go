@@ -9,15 +9,16 @@ import (
 )
 
 type Querier interface {
-	CreateBuild(ctx context.Context, arg CreateBuildParams) (Build, error)
-	CreateDeployment(ctx context.Context, arg CreateDeploymentParams) (Deployment, error)
-	GetBuild(ctx context.Context, id string) (Build, error)
-	GetDeployment(ctx context.Context, id string) (Deployment, error)
-	GetDeploymentByBuildID(ctx context.Context, buildID string) (Deployment, error)
-	ListBuilds(ctx context.Context) ([]Build, error)
-	ListDeployments(ctx context.Context) ([]Deployment, error)
-	UpdateBuild(ctx context.Context, arg UpdateBuildParams) (Build, error)
-	UpdateDeployment(ctx context.Context, arg UpdateDeploymentParams) (Deployment, error)
+	CreateSandbox(ctx context.Context, arg CreateSandboxParams) (Sandbox, error)
+	CreateWorker(ctx context.Context, arg CreateWorkerParams) (Worker, error)
+	DeleteSandbox(ctx context.Context, id string) error
+	DeleteWorker(ctx context.Context, id string) error
+	GetSandbox(ctx context.Context, id string) (Sandbox, error)
+	GetWorker(ctx context.Context, id string) (Worker, error)
+	ListSandboxes(ctx context.Context) ([]Sandbox, error)
+	ListWorkers(ctx context.Context) ([]Worker, error)
+	UpdateSandbox(ctx context.Context, arg UpdateSandboxParams) (Sandbox, error)
+	UpdateWorker(ctx context.Context, arg UpdateWorkerParams) (Worker, error)
 }
 
 var _ Querier = (*Queries)(nil)

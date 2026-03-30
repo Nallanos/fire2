@@ -8,7 +8,8 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github/nallanos/fire2/internal/db"
-	"github/nallanos/fire2/internal/packages/build"
+	"github/nallanos/fire2/internal/orchestrator"
+	sandbox "github/nallanos/fire2/internal/packages/sandbox"
 )
 
 type App struct {
@@ -31,12 +32,12 @@ func New(cfg Config, sql *sql.DB) *App {
 
 	db := db.New(sql)
 
-	buildRepo := build.NewPostgresRepository(db)
-	buildSvc := build.NewService(buildRepo)
-	buildHandlers := newBuildHTTPHandlers(buildSvc)
+	sandboxRepo := sandbox.NewPostgresRepository(db)
+	sandboxSvc := sandbox.NewService(sandboxRepo)
+	orchestratorHandlers := orchestrator.NewHTTPHandlers(sandboxSvc, db)
 
 	r.Route("/api", func(r chi.Router) {
-		r.Mount("/builds", buildHandlers.routes())
+		r.Mount("/sandboxes", orchestratorHandlers.Routes())
 	})
 
 	return &App{cfg: cfg, router: r, db: db}
