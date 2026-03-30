@@ -2,10 +2,10 @@ package worker
 
 import (
 	"context"
+	"net"
 	"os"
 	"strings"
 	"time"
-	"net"
 
 	workerv1 "github/nallanos/fire2/gen/worker/v1"
 
