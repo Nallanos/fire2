@@ -8,7 +8,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github/nallanos/fire2/internal/db"
-	"github/nallanos/fire2/internal/orchestrator"
+	"github/nallanos/fire2/internal/packages/orchestrator"
 	sandbox "github/nallanos/fire2/internal/packages/sandbox"
 )
 

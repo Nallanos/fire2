@@ -9,7 +9,7 @@ import (
 
 	workerv1 "github/nallanos/fire2/gen/worker/v1"
 	"github/nallanos/fire2/internal/db"
-	orchestrator "github/nallanos/fire2/internal/orchestrator"
+	orchestrator "github/nallanos/fire2/internal/packages/orchestrator"
 
 	"google.golang.org/grpc"
 )
