@@ -18,6 +18,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	dockerclient "github.com/docker/docker/client"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
 
 	orchestratorv1 "github/nallanos/fire2/gen/orchestrator/v1"
@@ -30,7 +31,7 @@ import (
 
 func TestSandboxFlowWithMultipleWorkers(t *testing.T) {
 	ctx := context.Background()
-	sqlDB, cleanup := setupPostgres(t, ctx)
+	sqlDB, pool, cleanup := setupPostgresWithPool(t, ctx)
 	defer cleanup()
 
 	if err := applyMigrations(sqlDB); err != nil {
@@ -67,8 +68,10 @@ func TestSandboxFlowWithMultipleWorkers(t *testing.T) {
 	defer cancelReporter()
 	go reporter.Run(reporterCtx)
 
+	riverClient := setupRiverClient(t, ctx, pool, queries)
+
 	cfg := Config{Port: "0", DatabaseURL: ""}
-	app := New(cfg, sqlDB)
+	app := New(cfg, sqlDB, riverClient)
 	srv := httptest.NewServer(app.Router())
 	defer srv.Close()
 

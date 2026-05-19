@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"log"
 	"net/http"
 	"os"
@@ -10,7 +9,11 @@ import (
 	"syscall"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivermigrate"
 
 	"github/nallanos/fire2/internal/app"
 	dbpkg "github/nallanos/fire2/internal/db"
@@ -19,16 +22,52 @@ import (
 
 func main() {
 	cfg := app.ConfigFromEnv()
+	ctx := context.Background()
 
-	sqlDB, err := sql.Open("pgx", cfg.DatabaseURL)
+	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	if err != nil {
+		log.Fatalf("pgxpool.New: %v", err)
+	}
+	defer pool.Close()
+
+	// Wrap pool as *sql.DB so existing sqlc-generated queries keep working unchanged.
+	sqlDB := stdlib.OpenDBFromPool(pool)
 	defer sqlDB.Close()
 
+	// Apply River schema migrations at startup.
+	migrator, err := rivermigrate.New(riverpgxv5.New(pool), nil)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("rivermigrate.New: %v", err)
+	}
+	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
+		log.Fatalf("river migrate up: %v", err)
 	}
 
 	queries := dbpkg.New(sqlDB)
-	a := app.New(cfg, sqlDB)
+
+	workers := river.NewWorkers()
+	river.AddWorker(workers, orchestrator.NewCreateSandboxWorker(queries))
+
+	riverClient, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
+		Queues:      map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 10}},
+		Workers:     workers,
+		MaxAttempts: 5,
+		RetryPolicy: &orchestrator.StrongRetryPolicy{},
+	})
+	if err != nil {
+		log.Fatalf("river.NewClient: %v", err)
+	}
+
+	if err := riverClient.Start(ctx); err != nil {
+		log.Fatalf("riverClient.Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = riverClient.Stop(stopCtx)
+	}()
+
+	a := app.New(cfg, sqlDB, riverClient)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -61,8 +100,7 @@ func main() {
 		log.Printf("grpc server error: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	_ = srv.Shutdown(ctx)
+	_ = srv.Shutdown(shutdownCtx)
 }

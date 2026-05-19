@@ -6,6 +6,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
 
 	"github/nallanos/fire2/internal/db"
 	"github/nallanos/fire2/internal/packages/orchestrator"
@@ -18,7 +20,7 @@ type App struct {
 	db     *db.Queries
 }
 
-func New(cfg Config, sql *sql.DB) *App {
+func New(cfg Config, sql *sql.DB, riverClient *river.Client[pgx.Tx]) *App {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
@@ -34,7 +36,7 @@ func New(cfg Config, sql *sql.DB) *App {
 
 	sandboxRepo := sandbox.NewPostgresRepository(db)
 	sandboxSvc := sandbox.NewService(sandboxRepo)
-	orchestratorHandlers := orchestrator.NewHTTPHandlers(sandboxSvc, db)
+	orchestratorHandlers := orchestrator.NewHTTPHandlers(sandboxSvc, db, riverClient)
 
 	r.Route("/api", func(r chi.Router) {
 		r.Mount("/sandboxes", orchestratorHandlers.Routes())

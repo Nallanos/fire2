@@ -17,19 +17,24 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivermigrate"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	workerv1 "github/nallanos/fire2/gen/worker/v1"
 	"github/nallanos/fire2/internal/db"
+	"github/nallanos/fire2/internal/packages/orchestrator"
 
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestSandboxAPIFlow(t *testing.T) {
 	ctx := context.Background()
-	sqlDB, cleanup := setupPostgres(t, ctx)
+	sqlDB, pool, cleanup := setupPostgresWithPool(t, ctx)
 	defer cleanup()
 
 	if err := applyMigrations(sqlDB); err != nil {
@@ -57,8 +62,10 @@ func TestSandboxAPIFlow(t *testing.T) {
 		t.Fatalf("create worker: %v", err)
 	}
 
+	riverClient := setupRiverClient(t, ctx, pool, queries)
+
 	cfg := Config{Port: "0", DatabaseURL: ""}
-	app := New(cfg, sqlDB)
+	app := New(cfg, sqlDB, riverClient)
 
 	srv := httptest.NewServer(app.Router())
 	defer srv.Close()
@@ -79,7 +86,11 @@ func TestSandboxAPIFlow(t *testing.T) {
 	}
 }
 
-func setupPostgres(t *testing.T, ctx context.Context) (*sql.DB, func()) {
+// setupPostgresWithPool starts a Postgres container and returns both a *sql.DB
+// and a *pgxpool.Pool (needed for the River client).
+func setupPostgresWithPool(t *testing.T, ctx context.Context) (*sql.DB, *pgxpool.Pool, func()) {
+	t.Helper()
+
 	container, err := postgres.RunContainer(ctx,
 		postgres.WithDatabase("fire2"),
 		postgres.WithUsername("fire2"),
@@ -95,22 +106,70 @@ func setupPostgres(t *testing.T, ctx context.Context) (*sql.DB, func()) {
 		t.Fatalf("connection string: %v", err)
 	}
 
-	sqlDB, err := sql.Open("pgx", connStr)
+	pool, err := pgxpool.New(ctx, connStr)
 	if err != nil {
 		_ = container.Terminate(ctx)
-		t.Fatalf("open db: %v", err)
+		t.Fatalf("pgxpool.New: %v", err)
 	}
+
+	sqlDB := stdlib.OpenDBFromPool(pool)
+
 	if err := waitForDB(ctx, sqlDB, 20*time.Second); err != nil {
 		_ = sqlDB.Close()
+		pool.Close()
 		_ = container.Terminate(ctx)
 		t.Fatalf("wait for db: %v", err)
 	}
 
 	cleanup := func() {
 		_ = sqlDB.Close()
+		pool.Close()
 		_ = container.Terminate(ctx)
 	}
 
+	return sqlDB, pool, cleanup
+}
+
+// setupRiverClient applies River migrations and starts a River client for tests.
+func setupRiverClient(t *testing.T, ctx context.Context, pool *pgxpool.Pool, queries *db.Queries) *river.Client[pgx.Tx] {
+	t.Helper()
+
+	migrator, err := rivermigrate.New(riverpgxv5.New(pool), nil)
+	if err != nil {
+		t.Fatalf("rivermigrate.New: %v", err)
+	}
+	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
+		t.Fatalf("river migrate up: %v", err)
+	}
+
+	workers := river.NewWorkers()
+	river.AddWorker(workers, orchestrator.NewCreateSandboxWorker(queries))
+
+	riverClient, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
+		Queues:      map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 10}},
+		Workers:     workers,
+		MaxAttempts: 5,
+		RetryPolicy: &orchestrator.StrongRetryPolicy{},
+	})
+	if err != nil {
+		t.Fatalf("river.NewClient: %v", err)
+	}
+
+	if err := riverClient.Start(ctx); err != nil {
+		t.Fatalf("riverClient.Start: %v", err)
+	}
+
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = riverClient.Stop(stopCtx)
+	})
+
+	return riverClient
+}
+
+func setupPostgres(t *testing.T, ctx context.Context) (*sql.DB, func()) {
+	sqlDB, _, cleanup := setupPostgresWithPool(t, ctx)
 	return sqlDB, cleanup
 }
 
@@ -221,16 +280,13 @@ type fakeWorkerServer struct {
 }
 
 func (f *fakeWorkerServer) CreateSandbox(ctx context.Context, req *workerv1.CreateSandboxRequest) (*workerv1.CreateSandboxResponse, error) {
-	createdAt := time.Now().UTC()
-	sandbox, err := f.queries.CreateSandbox(ctx, db.CreateSandboxParams{
-		ID:         req.GetId(),
-		Runtime:    req.GetRuntime(),
-		Status:     "running",
-		Image:      req.GetImage(),
-		Port:       req.GetPort(),
-		Ttl:        req.GetTtl(),
-		PreviewUrl: req.GetPreviewUrl(),
-		CreatedAt:  createdAt,
+	// The orchestrator handler pre-creates the sandbox record at status=queued,
+	// so the worker just updates it to running with the final port/image.
+	sandbox, err := f.queries.UpdateSandboxRunning(ctx, db.UpdateSandboxRunningParams{
+		ID:     req.GetId(),
+		Status: "running",
+		Port:   req.GetPort(),
+		Image:  req.GetImage(),
 	})
 	if err != nil {
 		return nil, err
@@ -238,29 +294,26 @@ func (f *fakeWorkerServer) CreateSandbox(ctx context.Context, req *workerv1.Crea
 
 	return &workerv1.CreateSandboxResponse{
 		Sandbox: &workerv1.Sandbox{
-			Id:         sandbox.ID,
-			Runtime:    sandbox.Runtime,
-			Status:     sandbox.Status,
-			Ttl:        sandbox.Ttl,
-			CreatedAt:  timestamppb.New(sandbox.CreatedAt),
-			Port:       sandbox.Port,
-			PreviewUrl: sandbox.PreviewUrl,
-			Image:      sandbox.Image,
+			Id:      sandbox.ID,
+			Runtime: sandbox.Runtime,
+			Status:  sandbox.Status,
+			Ttl:     sandbox.Ttl,
+			Port:    sandbox.Port,
+			Image:   sandbox.Image,
 		},
 	}, nil
 }
 
 func (f *fakeWorkerServer) GetWorkerInfo(ctx context.Context, _ *workerv1.GetWorkerInfoRequest) (*workerv1.GetWorkerInfoResponse, error) {
 	return &workerv1.GetWorkerInfoResponse{
-		Id:            "worker-1",
-		Address:       "127.0.0.1",
-		Status:        "active",
-		CpuBudget:     4,
-		MemBudget:     4096,
-		Capacity:      4,
-		CpuUsage:      0,
-		MemUsage:      0,
-		LastHeartbeat: timestamppb.New(time.Now().UTC()),
+		Id:        "worker-1",
+		Address:   "127.0.0.1",
+		Status:    "active",
+		CpuBudget: 4,
+		MemBudget: 4096,
+		Capacity:  4,
+		CpuUsage:  0,
+		MemUsage:  0,
 	}, nil
 }
 

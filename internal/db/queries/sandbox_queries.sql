@@ -17,6 +17,12 @@ SET status = $2
 WHERE id = $1
 RETURNING *;
 
+-- name: UpdateSandboxRunning :one
+UPDATE sandboxes
+SET status = $2, port = $3, image = $4
+WHERE id = $1
+RETURNING *;
+
 -- name: DeleteSandbox :exec
 DELETE FROM sandboxes
-WHERE id = $1;  
+WHERE id = $1;

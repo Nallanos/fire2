@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -10,19 +11,22 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 
-	workerv1 "github/nallanos/fire2/gen/worker/v1"
 	"github/nallanos/fire2/internal/db"
 	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
 )
 
 type HTTPHandlers struct {
-	sandboxSvc *sandboxpkg.Service
-	db         db.Querier
+	sandboxSvc  *sandboxpkg.Service
+	db          db.Querier
+	riverClient *river.Client[pgx.Tx]
 }
 
-func NewHTTPHandlers(sandboxSvc *sandboxpkg.Service, db db.Querier) *HTTPHandlers {
-	return &HTTPHandlers{sandboxSvc: sandboxSvc, db: db}
+func NewHTTPHandlers(sandboxSvc *sandboxpkg.Service, querier db.Querier, riverClient *river.Client[pgx.Tx]) *HTTPHandlers {
+	return &HTTPHandlers{sandboxSvc: sandboxSvc, db: querier, riverClient: riverClient}
 }
 
 func (h *HTTPHandlers) Routes() http.Handler {
@@ -57,45 +61,107 @@ func (h *HTTPHandlers) createSandbox(w http.ResponseWriter, r *http.Request) {
 		body.TTL = 3600
 	}
 
-	workers, err := h.db.ListWorkers(r.Context())
-	if err != nil {
-		log.Printf("list workers failed: %v", err)
-		http.Error(w, "failed to list workers", http.StatusInternalServerError)
-		return
-	}
-	if len(workers) == 0 {
-		log.Printf("no workers available for sandbox creation")
-		http.Error(w, "no workers available", http.StatusServiceUnavailable)
-		return
-	}
-
 	image := body.Image
 	if image == "" {
 		image = defaultImageForRuntime(body.Runtime)
 	}
-
 	port := body.Port
 	if port <= 0 {
 		port = defaultSandboxPort()
 	}
 
-	grpcResp, err := CreateSandboxOnLeastUsedWorker(r.Context(), workers, &workerv1.CreateSandboxRequest{
-		Id:         uuid.NewString(),
+	// Pre-create sandbox at status=queued with resolved image and port so GET
+	// endpoints return meaningful data while the job is in-flight.
+	sbxRow, err := h.db.CreateSandbox(r.Context(), db.CreateSandboxParams{
+		ID:         uuid.NewString(),
 		Runtime:    body.Runtime,
+		Status:     string(sandboxpkg.StatusQueued),
 		Image:      image,
 		Port:       port,
 		Ttl:        body.TTL,
 		PreviewUrl: body.PreviewURL,
+		CreatedAt:  time.Now().UTC(),
 	})
 	if err != nil {
-		log.Printf("create sandbox failed: runtime=%s image=%s port=%d ttl=%d workers=%d err=%v", body.Runtime, image, port, body.TTL, len(workers), err)
-		http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusBadGateway)
+		log.Printf("pre-create sandbox failed: %v", err)
+		http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusInternalServerError)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(grpcResp.GetSandbox())
+	// Subscribe before inserting the job to avoid a race where the job completes
+	// before the select loop starts. River's subscription channel is buffered (1000)
+	// so events are held even if we haven't read them yet.
+	eventCh, cancelSub := h.riverClient.Subscribe(river.EventKindJobCompleted, river.EventKindJobFailed)
+	defer cancelSub()
+
+	insertResult, err := h.riverClient.Insert(r.Context(), CreateSandboxArgs{
+		SandboxID:  sbxRow.ID,
+		Runtime:    body.Runtime,
+		Image:      image,
+		Port:       port,
+		TTL:        body.TTL,
+		PreviewURL: body.PreviewURL,
+	}, nil)
+	if err != nil {
+		log.Printf("enqueue create_sandbox job failed: %v", err)
+		_ = markSandboxFailed(r.Context(), h.db, sbxRow.ID)
+		http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusInternalServerError)
+		return
+	}
+
+	jobID := insertResult.Job.ID
+
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	defer cancel()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("create_sandbox timeout: sandbox=%s job=%d", sbxRow.ID, jobID)
+			_ = markSandboxFailed(r.Context(), h.db, sbxRow.ID)
+			http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusBadGateway)
+			return
+
+		case event, ok := <-eventCh:
+			if !ok {
+				_ = markSandboxFailed(r.Context(), h.db, sbxRow.ID)
+				http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusBadGateway)
+				return
+			}
+			if event.Job.ID != jobID {
+				continue
+			}
+			switch event.Kind {
+			case river.EventKindJobCompleted:
+				finalSbx, fetchErr := h.sandboxSvc.GetByID(r.Context(), sbxRow.ID)
+				if fetchErr != nil {
+					log.Printf("fetch sandbox after job completed: %v", fetchErr)
+					http.Error(w, sandboxpkg.ErrMsgFetchSandboxFailed, http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(finalSbx)
+				return
+
+			case river.EventKindJobFailed:
+				// EventKindJobFailed fires for both retryable failures and final discard.
+				// Only return 502 once all attempts are exhausted (JobStateDiscarded).
+				if event.Job.State == rivertype.JobStateDiscarded {
+					log.Printf("create_sandbox job exhausted: sandbox=%s job=%d", sbxRow.ID, jobID)
+					_ = markSandboxFailed(r.Context(), h.db, sbxRow.ID)
+					http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusBadGateway)
+					return
+				}
+				// JobStateRetryable: retry is scheduled, keep waiting.
+			}
+		}
+	}
+}
+
+func markSandboxFailed(ctx context.Context, querier db.Querier, id string) error {
+	_, err := querier.UpdateSandbox(ctx, db.UpdateSandboxParams{ID: id, Status: "failed"})
+	return err
 }
 
 func (h *HTTPHandlers) getSandboxByID(w http.ResponseWriter, r *http.Request) {

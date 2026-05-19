@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github/nallanos/fire2/internal/db"
 )
 
@@ -36,6 +38,12 @@ func (r *PostgresRepository) Create(ctx context.Context, s Sandbox) (Sandbox, er
 		CreatedAt:  s.CreatedAt,
 	})
 	if err != nil {
+		// If a record with this ID already exists (e.g., pre-created by the orchestrator),
+		// return the existing record so the caller can proceed without re-inserting.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return r.GetByID(ctx, s.ID)
+		}
 		return Sandbox{}, err
 	}
 
