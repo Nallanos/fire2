@@ -53,6 +53,7 @@ func (w *WorkerService) CreateSandbox(ctx context.Context, in CreateSandboxInput
 	// Check if worker has capacity to handle new sandbox
 	w.mu.Lock()
 	if w.worker.running_sandboxes >= w.worker.Capacity {
+		log.Printf("worker at capacity: running=%d capacity=%d", w.worker.running_sandboxes, w.worker.Capacity)
 		w.mu.Unlock()
 		return db.Sandbox{}, errors.New("worker at full capacity")
 	}
@@ -68,6 +69,7 @@ func (w *WorkerService) CreateSandbox(ctx context.Context, in CreateSandboxInput
 		PreviewURL: in.PreviewURL,
 	})
 	if err != nil {
+		log.Printf("create sandbox failed: id=%s runtime=%s image=%s port=%d err=%v", in.ID, in.Runtime, in.Image, in.Port, err)
 		w.mu.Lock()
 		w.worker.running_sandboxes--
 		w.mu.Unlock()
@@ -186,21 +188,31 @@ func (w *WorkerService) UpdateWorker(ctx context.Context) (string, error) {
 	w.mu.Unlock()
 
 	_, err = w.db.UpdateWorker(ctx, db.UpdateWorkerParams{
-		ID:       workerSnapshot.ID,
-		Status:   string(workerSnapshot.Status),
-		Address:  workerSnapshot.Address,
-		Capacity: int32(workerSnapshot.Capacity),
-		Port:     int32(workerSnapshot.Port),
+		ID:            workerSnapshot.ID,
+		Status:        string(workerSnapshot.Status),
+		Address:       workerSnapshot.Address,
+		Capacity:      int32(workerSnapshot.Capacity),
+		Port:          int32(workerSnapshot.Port),
+		CpuBudget:     int32(workerSnapshot.Budget.Cpu_budget),
+		MemBudget:     int32(workerSnapshot.Budget.Mem_budget),
+		CpuUsage:      int32(workerSnapshot.cpu_usage),
+		MemUsage:      int32(workerSnapshot.mem_usage),
+		LastHeartbeat: workerSnapshot.Last_heartbeat,
 	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			_, createErr := w.db.CreateWorker(ctx, db.CreateWorkerParams{
-				ID:        workerSnapshot.ID,
-				Status:    string(workerSnapshot.Status),
-				Address:   workerSnapshot.Address,
-				Capacity:  int32(workerSnapshot.Capacity),
-				Port:      int32(workerSnapshot.Port),
-				CreatedAt: workerSnapshot.Last_heartbeat,
+				ID:            workerSnapshot.ID,
+				Status:        string(workerSnapshot.Status),
+				Address:       workerSnapshot.Address,
+				Capacity:      int32(workerSnapshot.Capacity),
+				Port:          int32(workerSnapshot.Port),
+				CpuBudget:     int32(workerSnapshot.Budget.Cpu_budget),
+				MemBudget:     int32(workerSnapshot.Budget.Mem_budget),
+				CpuUsage:      int32(workerSnapshot.cpu_usage),
+				MemUsage:      int32(workerSnapshot.mem_usage),
+				LastHeartbeat: workerSnapshot.Last_heartbeat,
+				CreatedAt:     workerSnapshot.Last_heartbeat,
 			})
 			if createErr != nil {
 				return "", createErr

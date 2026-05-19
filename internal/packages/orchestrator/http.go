@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -58,10 +59,12 @@ func (h *HTTPHandlers) createSandbox(w http.ResponseWriter, r *http.Request) {
 
 	workers, err := h.db.ListWorkers(r.Context())
 	if err != nil {
+		log.Printf("list workers failed: %v", err)
 		http.Error(w, "failed to list workers", http.StatusInternalServerError)
 		return
 	}
 	if len(workers) == 0 {
+		log.Printf("no workers available for sandbox creation")
 		http.Error(w, "no workers available", http.StatusServiceUnavailable)
 		return
 	}
@@ -85,6 +88,7 @@ func (h *HTTPHandlers) createSandbox(w http.ResponseWriter, r *http.Request) {
 		PreviewUrl: body.PreviewURL,
 	})
 	if err != nil {
+		log.Printf("create sandbox failed: runtime=%s image=%s port=%d ttl=%d workers=%d err=%v", body.Runtime, image, port, body.TTL, len(workers), err)
 		http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusBadGateway)
 		return
 	}

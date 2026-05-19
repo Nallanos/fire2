@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package orchestrator.v1;
+
+option go_package = "github/nallanos/fire2/gen/orchestrator/v1;orchestrator";
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+service OrchestratorService {
+  rpc IngestSandboxEvent(SandboxEvent) returns (google.protobuf.Empty);
+}
+
+message SandboxEvent {
+  string id = 1;
+  string sandbox_id = 2;
+  string container_id = 3;
+  string worker_id = 4;
+  string event_type = 5;
+  string action = 6;
+  string actor_id = 7;
+  map<string, string> attributes = 8;
+  google.protobuf.Timestamp occurred_at = 9;
+}

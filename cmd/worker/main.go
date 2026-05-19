@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"log"
 	"os"
@@ -9,7 +10,8 @@ import (
 
 	"github/nallanos/fire2/internal/db"
 	"github/nallanos/fire2/internal/packages/docker"
-	workerpkg "github/nallanos/fire2/internal/worker"
+	"github/nallanos/fire2/internal/packages/orchestrator"
+	workerpkg "github/nallanos/fire2/internal/packages/worker"
 )
 
 const defaultWorkerPort = "50051"
@@ -23,6 +25,11 @@ func main() {
 	workerPort := os.Getenv("WORKER_PORT")
 	if workerPort == "" {
 		workerPort = defaultWorkerPort
+	}
+
+	orchestratorAddr := os.Getenv("ORCHESTRATOR_GRPC_ADDR")
+	if orchestratorAddr == "" {
+		orchestratorAddr = "127.0.0.1:7001"
 	}
 
 	sqlDB, err := sql.Open("pgx", databaseURL)
@@ -39,6 +46,15 @@ func main() {
 	queries := db.New(sqlDB)
 	workerService := workerpkg.NewWorkerService(dockerClient, queries)
 	workerGRPCServer := workerpkg.NewWorkerGRPCServer(workerService)
+
+	if eventClient, err := orchestrator.NewEventClient(context.Background(), orchestratorAddr); err != nil {
+		log.Printf("event client init failed: %v", err)
+	} else {
+		defer eventClient.Close()
+		workerID, _ := os.Hostname()
+		reporter := workerpkg.NewEventReporter(dockerClient, eventClient.Client(), workerID)
+		go reporter.Run(context.Background())
+	}
 
 	log.Printf("worker gRPC listening on :%s", workerPort)
 	if err := workerpkg.ServeGRPC(":"+workerPort, workerGRPCServer); err != nil {

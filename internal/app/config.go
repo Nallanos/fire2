@@ -3,8 +3,9 @@ package app
 import "os"
 
 type Config struct {
-	Port        string
-	DatabaseURL string
+	Port                 string
+	DatabaseURL          string
+	OrchestratorGRPCPort string
 }
 
 func ConfigFromEnv() Config {
@@ -18,5 +19,10 @@ func ConfigFromEnv() Config {
 		databaseURL = "postgresql://temporal:temporal@localhost/temporal"
 	}
 
-	return Config{Port: port, DatabaseURL: databaseURL}
+	orchestratorGRPCPort := os.Getenv("ORCHESTRATOR_GRPC_PORT")
+	if orchestratorGRPCPort == "" {
+		orchestratorGRPCPort = "7001"
+	}
+
+	return Config{Port: port, DatabaseURL: databaseURL, OrchestratorGRPCPort: orchestratorGRPCPort}
 }

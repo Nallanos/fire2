@@ -3,8 +3,10 @@ package sandbox
 import (
 	"context"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/docker/docker/errdefs"
 	"github.com/google/uuid"
 
 	"github/nallanos/fire2/internal/packages/docker"
@@ -61,6 +63,9 @@ func (s *Service) CreateAndStart(ctx context.Context, req RuntimeCreateRequest) 
 	if s.docker == nil {
 		return Sandbox{}, ErrDockerClientRequired
 	}
+	if err := s.ensureImage(ctx, req.Image); err != nil {
+		return Sandbox{}, err
+	}
 
 	containerID, err := s.docker.CreateContainer(ctx, req.Image, strconv.Itoa(int(req.Port)), req.ID)
 	if err != nil {
@@ -89,6 +94,21 @@ func (s *Service) CreateAndStart(ctx context.Context, req RuntimeCreateRequest) 
 	}
 
 	return sbx, nil
+}
+
+func (s *Service) ensureImage(ctx context.Context, image string) error {
+	if strings.TrimSpace(image) == "" {
+		return nil
+	}
+
+	if err := s.docker.InspectImage(ctx, image); err != nil {
+		if errdefs.IsNotFound(err) {
+			return s.docker.PullImage(ctx, image)
+		}
+		return err
+	}
+
+	return nil
 }
 
 func (s *Service) Stop(ctx context.Context, containerID string) error {

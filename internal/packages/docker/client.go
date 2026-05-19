@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
@@ -22,6 +23,7 @@ type ClientInterface interface {
 	StopContainer(ctx context.Context, containerID string) error
 	RemoveContainer(ctx context.Context, containerID string) error
 	InspectImage(ctx context.Context, img string) error
+	Events(ctx context.Context) (<-chan EventMessage, <-chan error)
 }
 
 func NewClient() (*Client, error) {
@@ -45,11 +47,13 @@ func (c *Client) PullImage(ctx context.Context, img string) error {
 func (c *Client) CreateContainer(ctx context.Context, img string, hostPort string, id string) (string, error) {
 	config := &container.Config{
 		Image: img,
+		Cmd:   []string{"sh", "-c", "sleep infinity"},
 		ExposedPorts: nat.PortSet{
 			"3000/tcp": struct{}{},
 		},
 		Labels: map[string]string{
-			"id": id,
+			"id":         id,
+			"sandbox_id": id,
 		},
 	}
 
@@ -88,6 +92,51 @@ func (c *Client) RemoveContainer(ctx context.Context, containerID string) error 
 func (c *Client) InspectImage(ctx context.Context, img string) error {
 	_, _, err := c.cli.ImageInspectWithRaw(ctx, img)
 	return err
+}
+
+// Events returns a stream of events in the daemon. It's up to the caller to close the stream by cancelling the context. Once the stream has been completely read an io.EOF error will
+// be sent over the error channel. If an error is sent all processing will be stopped.
+func (c *Client) Events(ctx context.Context) (<-chan EventMessage, <-chan error) {
+	filterArgs := filters.NewArgs()
+	filterArgs.Add("type", "container")
+	msgs, errs := c.cli.Events(ctx, events.ListOptions{Filters: filterArgs})
+	out := make(chan EventMessage)
+	go func() {
+		defer close(out)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg, ok := <-msgs:
+				if !ok {
+					return
+				}
+				out <- EventMessage{
+					Type:   string(msg.Type),
+					Action: string(msg.Action),
+					Actor: EventActor{
+						ID:         msg.Actor.ID,
+						Attributes: msg.Actor.Attributes,
+					},
+					Time: msg.Time,
+				}
+			}
+		}
+	}()
+
+	return out, errs
+}
+
+type EventActor struct {
+	ID         string
+	Attributes map[string]string
+}
+
+type EventMessage struct {
+	Type   string
+	Action string
+	Actor  EventActor
+	Time   int64
 }
 
 func getContainerByLabel(ctx context.Context, cli *client.Client, labelKey string, labelValue string) (string, error) {

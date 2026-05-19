@@ -1,0 +1,13 @@
+2026/05/19 12:09:57 api listening on :8081
+2026/05/19 12:09:57 orchestrator gRPC listening on :7001
+2026/05/19 12:09:57 [allan-NucBox-K6/Pr8snvKqrc-000001] "GET http://localhost:8081/health HTTP/1.1" from [::1]:51030 - 200 2B in 22.231µs
+2026/05/19 12:10:11 update sandbox status failed: sandbox=dbda36e8-f710-4a3e-96cb-744970f0047e action=start err=sql: no rows in result set
+2026/05/19 12:10:11 [allan-NucBox-K6/Pr8snvKqrc-000002] "POST http://localhost:8081/api/sandboxes HTTP/1.1" from [::1]:43716 - 201 185B in 193.81212ms
+2026/05/19 12:10:11 [allan-NucBox-K6/Pr8snvKqrc-000003] "POST http://localhost:8081/api/sandboxes HTTP/1.1" from [::1]:43726 - 201 191B in 162.847538ms
+2026/05/19 12:10:20 [allan-NucBox-K6/Pr8snvKqrc-000004] "POST http://localhost:8081/api/sandboxes HTTP/1.1" from [::1]:43734 - 201 187B in 8.368671847s
+2026/05/19 12:10:20 [allan-NucBox-K6/Pr8snvKqrc-000005] "GET http://localhost:8081/api/sandboxes HTTP/1.1" from [::1]:47156 - 200 990B in 664.885µs
+2026/05/19 12:10:50 update sandbox status failed: sandbox=8d27fae1-b59a-466e-8c16-5916eb8b6195 action=start err=sql: no rows in result set
+2026/05/19 12:10:50 [allan-NucBox-K6/Pr8snvKqrc-000006] "POST http://localhost:8081/api/sandboxes HTTP/1.1" from [::1]:52992 - 201 185B in 187.470028ms
+2026/05/19 12:10:51 [allan-NucBox-K6/Pr8snvKqrc-000007] "POST http://localhost:8081/api/sandboxes HTTP/1.1" from [::1]:53008 - 201 190B in 173.819817ms
+2026/05/19 12:10:51 [allan-NucBox-K6/Pr8snvKqrc-000008] "POST http://localhost:8081/api/sandboxes HTTP/1.1" from [::1]:53012 - 201 187B in 172.977956ms
+2026/05/19 12:10:51 [allan-NucBox-K6/Pr8snvKqrc-000009] "GET http://localhost:8081/api/sandboxes HTTP/1.1" from [::1]:53016 - 200 1586B in 351.507µs

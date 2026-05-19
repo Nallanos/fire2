@@ -1,3 +1,4 @@
+-- migrate:up
 CREATE TABLE sandboxes (
     id TEXT PRIMARY KEY,
     runtime TEXT NOT NULL,
@@ -17,3 +18,7 @@ CREATE TABLE worker (
     port INT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- migrate:down
+DROP TABLE worker;
+DROP TABLE sandboxes;

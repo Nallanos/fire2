@@ -67,20 +67,30 @@ func main() {
 	queries := db.New(sqlDB)
 
 	_, err = queries.CreateWorker(ctx, db.CreateWorkerParams{
-		ID:        id,
-		Status:    status,
-		Address:   host,
-		Capacity:  int32(cpuBudget),
-		Port:      int32(port),
-		CreatedAt: time.Now().UTC(),
+		ID:            id,
+		Status:        status,
+		Address:       host,
+		Capacity:      int32(cpuBudget),
+		Port:          int32(port),
+		CpuBudget:     int32(cpuBudget),
+		MemBudget:     int32(memBudget),
+		CpuUsage:      0,
+		MemUsage:      0,
+		LastHeartbeat: time.Now().UTC(),
+		CreatedAt:     time.Now().UTC(),
 	})
 	if err != nil {
 		_, updateErr := queries.UpdateWorker(ctx, db.UpdateWorkerParams{
-			ID:       id,
-			Status:   status,
-			Address:  host,
-			Capacity: int32(cpuBudget),
-			Port:     int32(port),
+			ID:            id,
+			Status:        status,
+			Address:       host,
+			Capacity:      int32(cpuBudget),
+			Port:          int32(port),
+			CpuBudget:     int32(cpuBudget),
+			MemBudget:     int32(memBudget),
+			CpuUsage:      0,
+			MemUsage:      0,
+			LastHeartbeat: time.Now().UTC(),
 		})
 		if updateErr != nil {
 			log.Fatalf("create worker failed: %v; update fallback failed: %v", err, updateErr)

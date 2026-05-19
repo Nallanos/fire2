@@ -1,0 +1,2 @@
+migrations_dir: internal/db/migrations
+database_url: ${DATABASE_URL}

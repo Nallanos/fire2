@@ -1,0 +1,6 @@
+2026/05/19 12:09:58 worker gRPC listening on :50051
+2026/05/19 12:11:02 report sandbox event failed: rpc error: code = InvalidArgument desc = sandbox_id is required
+2026/05/19 12:11:02 report sandbox event failed: rpc error: code = InvalidArgument desc = sandbox_id is required
+2026/05/19 12:11:02 report sandbox event failed: rpc error: code = InvalidArgument desc = sandbox_id is required
+2026/05/19 12:11:02 report sandbox event failed: rpc error: code = InvalidArgument desc = sandbox_id is required
+2026/05/19 12:11:02 report sandbox event failed: rpc error: code = InvalidArgument desc = sandbox_id is required
