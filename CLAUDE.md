@@ -89,4 +89,3 @@ PostgreSQL (via pgx/v5 + sqlc). Schema managed with dbmate migrations in `intern
 
 - gRPC connections use insecure credentials — intended for private/local networks only.
 - Workers are statically registered; there is no auto-discovery.
-- The `river` job-queue dependency is present in `go.mod` but not yet wired up.
