@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -9,7 +10,13 @@ import (
 	"github.com/riverqueue/river"
 	workerv1 "github/nallanos/fire2/gen/worker/v1"
 	"github/nallanos/fire2/internal/db"
+	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
 )
+
+// errSandboxAbandoned is returned when the HTTP handler already marked the
+// sandbox failed (timeout). River treats this as a non-retriable discard so
+// it emits EventKindJobFailed rather than EventKindJobCompleted.
+var errSandboxAbandoned = errors.New("sandbox already marked failed by handler")
 
 type CreateSandboxArgs struct {
 	SandboxID  string `json:"sandbox_id"`
@@ -41,8 +48,8 @@ func (w *CreateSandboxWorker) Work(ctx context.Context, job *river.Job[CreateSan
 	// Guard: if the HTTP handler timed out and already marked the sandbox failed,
 	// don't overwrite that state with a successful result.
 	current, err := w.db.GetSandbox(ctx, args.SandboxID)
-	if err == nil && current.Status == "failed" {
-		return nil
+	if err == nil && current.Status == string(sandboxpkg.StatusFailed) {
+		return river.JobCancel(errSandboxAbandoned)
 	}
 
 	workers, err := w.db.ListWorkers(ctx)
