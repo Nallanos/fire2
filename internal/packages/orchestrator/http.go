@@ -19,14 +19,38 @@ import (
 	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
 )
 
+// Option configures an HTTPHandlers instance.
+type Option func(*HTTPHandlers)
+
+// WithWaitTimeout overrides the maximum time createSandbox waits for a River
+// job to complete before returning 502. Values <= 0 are ignored (keeps default).
+// Intended for tests; production code uses the 45-second default.
+func WithWaitTimeout(d time.Duration) Option {
+	return func(h *HTTPHandlers) {
+		if d > 0 {
+			h.waitTimeout = d
+		}
+	}
+}
+
 type HTTPHandlers struct {
 	sandboxSvc  *sandboxpkg.Service
 	db          db.Querier
 	riverClient *river.Client[pgx.Tx]
+	waitTimeout time.Duration
 }
 
-func NewHTTPHandlers(sandboxSvc *sandboxpkg.Service, querier db.Querier, riverClient *river.Client[pgx.Tx]) *HTTPHandlers {
-	return &HTTPHandlers{sandboxSvc: sandboxSvc, db: querier, riverClient: riverClient}
+func NewHTTPHandlers(sandboxSvc *sandboxpkg.Service, querier db.Querier, riverClient *river.Client[pgx.Tx], opts ...Option) *HTTPHandlers {
+	h := &HTTPHandlers{
+		sandboxSvc:  sandboxSvc,
+		db:          querier,
+		riverClient: riverClient,
+		waitTimeout: 45 * time.Second,
+	}
+	for _, o := range opts {
+		o(h)
+	}
+	return h
 }
 
 func (h *HTTPHandlers) Routes() http.Handler {
@@ -111,7 +135,7 @@ func (h *HTTPHandlers) createSandbox(w http.ResponseWriter, r *http.Request) {
 
 	jobID := insertResult.Job.ID
 
-	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), h.waitTimeout)
 	defer cancel()
 
 	for {

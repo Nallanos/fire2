@@ -37,6 +37,11 @@ func (q *Queries) CreateWorker(ctx context.Context, arg CreateWorkerParams) (Wor
 		arg.Address,
 		arg.Capacity,
 		arg.Port,
+		arg.CpuBudget,
+		arg.MemBudget,
+		arg.CpuUsage,
+		arg.MemUsage,
+		arg.LastHeartbeat,
 		arg.CreatedAt,
 	)
 	var i Worker
@@ -47,6 +52,11 @@ func (q *Queries) CreateWorker(ctx context.Context, arg CreateWorkerParams) (Wor
 		&i.Capacity,
 		&i.Port,
 		&i.CreatedAt,
+		&i.CpuBudget,
+		&i.MemBudget,
+		&i.CpuUsage,
+		&i.MemUsage,
+		&i.LastHeartbeat,
 	)
 	return i, err
 }
@@ -62,7 +72,7 @@ func (q *Queries) DeleteWorker(ctx context.Context, id string) error {
 }
 
 const getWorker = `-- name: GetWorker :one
-SELECT id, status, address, capacity, port, created_at FROM worker
+SELECT id, status, address, capacity, port, created_at, cpu_budget, mem_budget, cpu_usage, mem_usage, last_heartbeat FROM worker
 WHERE id = $1 LIMIT 1
 `
 
@@ -76,12 +86,17 @@ func (q *Queries) GetWorker(ctx context.Context, id string) (Worker, error) {
 		&i.Capacity,
 		&i.Port,
 		&i.CreatedAt,
+		&i.CpuBudget,
+		&i.MemBudget,
+		&i.CpuUsage,
+		&i.MemUsage,
+		&i.LastHeartbeat,
 	)
 	return i, err
 }
 
 const listWorkers = `-- name: ListWorkers :many
-SELECT id, status, address, capacity, port, created_at FROM worker
+SELECT id, status, address, capacity, port, created_at, cpu_budget, mem_budget, cpu_usage, mem_usage, last_heartbeat FROM worker
 ORDER BY id DESC
 `
 
@@ -101,6 +116,11 @@ func (q *Queries) ListWorkers(ctx context.Context) ([]Worker, error) {
 			&i.Capacity,
 			&i.Port,
 			&i.CreatedAt,
+			&i.CpuBudget,
+			&i.MemBudget,
+			&i.CpuUsage,
+			&i.MemUsage,
+			&i.LastHeartbeat,
 		); err != nil {
 			return nil, err
 		}
@@ -117,9 +137,9 @@ func (q *Queries) ListWorkers(ctx context.Context) ([]Worker, error) {
 
 const updateWorker = `-- name: UpdateWorker :one
 UPDATE worker
-SET status = $2, address = $3, Capacity = $4, port = $5
+SET status = $2, address = $3, Capacity = $4, port = $5, cpu_budget = $6, mem_budget = $7, cpu_usage = $8, mem_usage = $9, last_heartbeat = $10
 WHERE id = $1
-RETURNING id, status, address, capacity, port, created_at
+RETURNING id, status, address, capacity, port, created_at, cpu_budget, mem_budget, cpu_usage, mem_usage, last_heartbeat
 `
 
 type UpdateWorkerParams struct {

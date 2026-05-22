@@ -36,7 +36,9 @@ func New(cfg Config, sql *sql.DB, riverClient *river.Client[pgx.Tx]) *App {
 
 	sandboxRepo := sandbox.NewPostgresRepository(db)
 	sandboxSvc := sandbox.NewService(sandboxRepo)
-	orchestratorHandlers := orchestrator.NewHTTPHandlers(sandboxSvc, db, riverClient)
+	orchestratorHandlers := orchestrator.NewHTTPHandlers(sandboxSvc, db, riverClient,
+		orchestrator.WithWaitTimeout(cfg.SandboxWaitTimeout),
+	)
 
 	r.Route("/api", func(r chi.Router) {
 		r.Mount("/sandboxes", orchestratorHandlers.Routes())
