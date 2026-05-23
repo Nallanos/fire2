@@ -14,8 +14,9 @@ import (
 )
 
 // errSandboxAbandoned is returned when the HTTP handler already marked the
-// sandbox failed (timeout). River treats this as a non-retriable discard so
-// it emits EventKindJobFailed rather than EventKindJobCompleted.
+// sandbox failed (timeout). Returning river.JobCancel for this condition makes
+// River treat the job as cancelled (JobStateCancelled / EventKindJobCancelled),
+// not completed or failed.
 var errSandboxAbandoned = errors.New("sandbox already marked failed by handler")
 
 type CreateSandboxArgs struct {
