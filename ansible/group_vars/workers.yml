@@ -1,0 +1,4 @@
+---
+# Required — no defaults. Set these before running the playbook.
+database_url: ""
+orchestrator_grpc_addr: ""

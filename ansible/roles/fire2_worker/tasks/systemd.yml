@@ -1,0 +1,30 @@
+---
+- name: Deploy worker environment file
+  ansible.builtin.template:
+    src: worker.env.j2
+    dest: "{{ fire2_install_dir }}/worker.env"
+    owner: "{{ fire2_user }}"
+    group: "{{ fire2_group }}"
+    mode: "0640"
+  notify: restart fire2-worker
+
+- name: Deploy systemd unit file
+  ansible.builtin.template:
+    src: fire2-worker.service.j2
+    dest: /etc/systemd/system/fire2-worker.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd
+
+- name: Ensure fire2-worker service is started and enabled
+  ansible.builtin.systemd:
+    name: fire2-worker
+    state: started
+    enabled: true
+
+# Flush now so the service is definitely running before register.yml upserts
+# the worker row — avoids a window where the orchestrator could route to a
+# worker that hasn't finished restarting yet.
+- name: Flush handlers before worker registration
+  ansible.builtin.meta: flush_handlers

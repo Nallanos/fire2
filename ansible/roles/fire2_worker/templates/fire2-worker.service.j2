@@ -1,0 +1,20 @@
+[Unit]
+Description=fire2 worker node
+Documentation=https://github.com/nallanos/fire2
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+User={{ fire2_user }}
+Group={{ fire2_group }}
+EnvironmentFile={{ fire2_install_dir }}/worker.env
+ExecStart={{ fire2_install_dir }}/worker
+Restart=on-failure
+RestartSec=5s
+
+# Ensure the process group is killed on stop/restart — no orphan goroutines.
+KillMode=mixed
+TimeoutStopSec=10s
+
+[Install]
+WantedBy=multi-user.target

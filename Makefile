@@ -25,3 +25,17 @@ run:
 .PHONY: run-worker
 run-worker:
 	$(GO) run ./cmd/worker
+
+ANSIBLE_INVENTORY ?= ansible/inventory/hosts.yml
+ANSIBLE_PLAYBOOK  ?= ansible/playbook.yml
+
+.PHONY: ansible-build
+ansible-build:
+	@mkdir -p dist
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o dist/worker      ./cmd/worker
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o dist/create_worker ./cmd/create_worker
+	@echo "built: dist/worker dist/create_worker"
+
+.PHONY: ansible-deploy
+ansible-deploy:
+	ansible-playbook $(ANSIBLE_PLAYBOOK) -i $(ANSIBLE_INVENTORY)

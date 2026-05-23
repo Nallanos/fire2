@@ -1,0 +1,6 @@
+---
+- name: Deploy fire2 worker
+  hosts: workers
+  become: true
+  roles:
+    - fire2_worker

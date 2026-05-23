@@ -1,0 +1,25 @@
+---
+# Always runs — create_worker is an upsert, so this is safe to repeat.
+# It also picks up any changes to host, port, or budget variables.
+- name: Register worker in Postgres
+  ansible.builtin.command:
+    argv:
+      - "{{ fire2_install_dir }}/create_worker"
+      - "--id"
+      - "{{ worker_id }}"
+      - "--host"
+      - "{{ worker_advertised_host }}"
+      - "--port"
+      - "{{ worker_port }}"
+      - "--cpu-budget"
+      - "{{ worker_cpu_budget }}"
+      - "--mem-budget"
+      - "{{ worker_mem_budget }}"
+      - "--db-url"
+      - "{{ database_url }}"
+  # create_worker exits 0 on both insert and update, so we can't derive
+  # a meaningful changed signal from its output. Marking changed_when: false
+  # keeps the run idempotent from Ansible's perspective while still surfacing
+  # non-zero exits as failures.
+  changed_when: false
+  become_user: "{{ fire2_user }}"
