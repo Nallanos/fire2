@@ -19,6 +19,7 @@ type Querier interface {
 	ListSandboxes(ctx context.Context) ([]Sandbox, error)
 	ListWorkers(ctx context.Context) ([]Worker, error)
 	UpdateSandbox(ctx context.Context, arg UpdateSandboxParams) (Sandbox, error)
+	UpdateSandboxIfQueued(ctx context.Context, arg UpdateSandboxIfQueuedParams) (Sandbox, error)
 	UpdateSandboxRunning(ctx context.Context, arg UpdateSandboxRunningParams) (Sandbox, error)
 	UpdateWorker(ctx context.Context, arg UpdateWorkerParams) (Worker, error)
 }

@@ -2,15 +2,16 @@ package orchestrator
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
-	"github.com/riverqueue/river"
 	workerv1 "github/nallanos/fire2/gen/worker/v1"
 	"github/nallanos/fire2/internal/db"
 	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
+
+	"github.com/riverqueue/river"
 )
 
 // errSandboxAbandoned is returned when the HTTP handler already marked the
@@ -46,11 +47,17 @@ func (w *CreateSandboxWorker) Timeout(_ *river.Job[CreateSandboxArgs]) time.Dura
 func (w *CreateSandboxWorker) Work(ctx context.Context, job *river.Job[CreateSandboxArgs]) error {
 	args := job.Args
 
-	// Guard: if the HTTP handler timed out and already marked the sandbox failed,
-	// don't overwrite that state with a successful result.
+	// Fast-fail before touching the worker fleet: if the sandbox is already in
+	// a terminal or complete state, skip the gRPC call entirely.
 	current, err := w.db.GetSandbox(ctx, args.SandboxID)
-	if err == nil && current.Status == string(sandboxpkg.StatusFailed) {
+	if err != nil {
+		return fmt.Errorf("get sandbox: %w", err)
+	}
+	switch current.Status {
+	case string(sandboxpkg.StatusFailed):
 		return river.JobCancel(errSandboxAbandoned)
+	case string(sandboxpkg.StatusRunning), string(sandboxpkg.StatusSucceeded):
+		return nil
 	}
 
 	workers, err := w.db.ListWorkers(ctx)
@@ -61,7 +68,7 @@ func (w *CreateSandboxWorker) Work(ctx context.Context, job *river.Job[CreateSan
 		return fmt.Errorf("no workers available")
 	}
 
-	grpcResp, err := CreateSandboxOnLeastUsedWorker(ctx, workers, &workerv1.CreateSandboxRequest{
+	grpcResp, workerAddr, err := CreateSandboxOnLeastUsedWorker(ctx, workers, &workerv1.CreateSandboxRequest{
 		Id:         args.SandboxID,
 		Runtime:    args.Runtime,
 		Image:      args.Image,
@@ -73,14 +80,24 @@ func (w *CreateSandboxWorker) Work(ctx context.Context, job *river.Job[CreateSan
 		return fmt.Errorf("create sandbox on worker: %w", err)
 	}
 
+	// Atomic transition: only write "running" if the sandbox is still "queued".
+	// 0 rows means the HTTP handler abandoned the sandbox while the gRPC call
+	// was in-flight — clean up the container we just created and cancel the job.
 	sbx := grpcResp.GetSandbox()
-	if _, updateErr := w.db.UpdateSandboxRunning(ctx, db.UpdateSandboxRunningParams{
+	_, updateErr := w.db.UpdateSandboxIfQueued(ctx, db.UpdateSandboxIfQueuedParams{
 		ID:     args.SandboxID,
-		Status: "running",
+		Status: string(sandboxpkg.StatusRunning),
 		Port:   sbx.GetPort(),
 		Image:  sbx.GetImage(),
-	}); updateErr != nil {
-		log.Printf("update sandbox running: id=%s err=%v", args.SandboxID, updateErr)
+	})
+	if updateErr != nil {
+		if errors.Is(updateErr, sql.ErrNoRows) {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cleanupCancel()
+			DestroySandboxOnWorker(cleanupCtx, workerAddr, args.SandboxID)
+			return river.JobCancel(errSandboxAbandoned)
+		}
+		return fmt.Errorf("update sandbox running: %w", updateErr)
 	}
 
 	return nil

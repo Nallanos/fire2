@@ -11,11 +11,12 @@ import (
 	"github/nallanos/fire2/internal/db"
 )
 
-// stubQuerier satisfies db.Querier for unit tests. Set getSandboxFn /
-// listWorkersFn to control behaviour; all other methods panic.
+// stubQuerier satisfies db.Querier for unit tests. Set the *Fn fields to
+// control behaviour; methods with no fn set panic on call.
 type stubQuerier struct {
-	getSandboxFn  func(ctx context.Context, id string) (db.Sandbox, error)
-	listWorkersFn func(ctx context.Context) ([]db.Worker, error)
+	getSandboxFn            func(ctx context.Context, id string) (db.Sandbox, error)
+	listWorkersFn           func(ctx context.Context) ([]db.Worker, error)
+	updateSandboxIfQueuedFn func(ctx context.Context, arg db.UpdateSandboxIfQueuedParams) (db.Sandbox, error)
 }
 
 func (s *stubQuerier) GetSandbox(ctx context.Context, id string) (db.Sandbox, error) {
@@ -55,6 +56,12 @@ func (s *stubQuerier) ListSandboxes(_ context.Context) ([]db.Sandbox, error) {
 }
 func (s *stubQuerier) UpdateSandbox(_ context.Context, _ db.UpdateSandboxParams) (db.Sandbox, error) {
 	panic("stubQuerier: unexpected call to UpdateSandbox")
+}
+func (s *stubQuerier) UpdateSandboxIfQueued(ctx context.Context, arg db.UpdateSandboxIfQueuedParams) (db.Sandbox, error) {
+	if s.updateSandboxIfQueuedFn != nil {
+		return s.updateSandboxIfQueuedFn(ctx, arg)
+	}
+	panic("stubQuerier: unexpected call to UpdateSandboxIfQueued")
 }
 func (s *stubQuerier) UpdateSandboxRunning(_ context.Context, _ db.UpdateSandboxRunningParams) (db.Sandbox, error) {
 	panic("stubQuerier: unexpected call to UpdateSandboxRunning")
@@ -137,5 +144,35 @@ func TestCreateSandboxWorker_ListWorkersDBErrorReturnsRetriableError(t *testing.
 	}
 	if !errors.Is(err, dbErr) {
 		t.Fatalf("expected error to wrap the DB error, got: %v", err)
+	}
+}
+
+func TestCreateSandboxWorker_AlreadyRunningIsNoop(t *testing.T) {
+	querier := &stubQuerier{
+		getSandboxFn: func(_ context.Context, _ string) (db.Sandbox, error) {
+			return db.Sandbox{Status: "running"}, nil
+		},
+	}
+	worker := NewCreateSandboxWorker(querier)
+
+	err := worker.Work(context.Background(), makeJob("sandbox-running"))
+
+	if err != nil {
+		t.Fatalf("expected no error for already-running sandbox, got: %v", err)
+	}
+}
+
+func TestCreateSandboxWorker_AlreadySucceededIsNoop(t *testing.T) {
+	querier := &stubQuerier{
+		getSandboxFn: func(_ context.Context, _ string) (db.Sandbox, error) {
+			return db.Sandbox{Status: "succeeded"}, nil
+		},
+	}
+	worker := NewCreateSandboxWorker(querier)
+
+	err := worker.Work(context.Background(), makeJob("sandbox-succeeded"))
+
+	if err != nil {
+		t.Fatalf("expected no error for already-succeeded sandbox, got: %v", err)
 	}
 }

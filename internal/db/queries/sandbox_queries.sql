@@ -23,6 +23,12 @@ SET status = $2, port = $3, image = $4
 WHERE id = $1
 RETURNING *;
 
+-- name: UpdateSandboxIfQueued :one
+UPDATE sandboxes
+SET status = $2, port = $3, image = $4
+WHERE id = $1 AND status = 'queued'
+RETURNING *;
+
 -- name: DeleteSandbox :exec
 DELETE FROM sandboxes
 WHERE id = $1;

@@ -102,7 +102,7 @@ func TestCreateSandboxOnLeastUsedWorker_MinimalConfig(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	resp, err := orchestrator.CreateSandboxOnLeastUsedWorker(ctx, workers, &workerv1.CreateSandboxRequest{
+	resp, _, err := orchestrator.CreateSandboxOnLeastUsedWorker(ctx, workers, &workerv1.CreateSandboxRequest{
 		Id:         "sandbox-test",
 		Runtime:    "node",
 		Image:      "node:20-alpine",

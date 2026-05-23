@@ -148,6 +148,41 @@ func (q *Queries) UpdateSandbox(ctx context.Context, arg UpdateSandboxParams) (S
 	return i, err
 }
 
+const updateSandboxIfQueued = `-- name: UpdateSandboxIfQueued :one
+UPDATE sandboxes
+SET status = $2, port = $3, image = $4
+WHERE id = $1 AND status = 'queued'
+RETURNING id, runtime, status, ttl, created_at, port, preview_url, image
+`
+
+type UpdateSandboxIfQueuedParams struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	Port   int32  `json:"port"`
+	Image  string `json:"image"`
+}
+
+func (q *Queries) UpdateSandboxIfQueued(ctx context.Context, arg UpdateSandboxIfQueuedParams) (Sandbox, error) {
+	row := q.db.QueryRowContext(ctx, updateSandboxIfQueued,
+		arg.ID,
+		arg.Status,
+		arg.Port,
+		arg.Image,
+	)
+	var i Sandbox
+	err := row.Scan(
+		&i.ID,
+		&i.Runtime,
+		&i.Status,
+		&i.Ttl,
+		&i.CreatedAt,
+		&i.Port,
+		&i.PreviewUrl,
+		&i.Image,
+	)
+	return i, err
+}
+
 const updateSandboxRunning = `-- name: UpdateSandboxRunning :one
 UPDATE sandboxes
 SET status = $2, port = $3, image = $4
@@ -163,7 +198,12 @@ type UpdateSandboxRunningParams struct {
 }
 
 func (q *Queries) UpdateSandboxRunning(ctx context.Context, arg UpdateSandboxRunningParams) (Sandbox, error) {
-	row := q.db.QueryRowContext(ctx, updateSandboxRunning, arg.ID, arg.Status, arg.Port, arg.Image)
+	row := q.db.QueryRowContext(ctx, updateSandboxRunning,
+		arg.ID,
+		arg.Status,
+		arg.Port,
+		arg.Image,
+	)
 	var i Sandbox
 	err := row.Scan(
 		&i.ID,
