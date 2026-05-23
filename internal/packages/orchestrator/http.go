@@ -141,30 +141,25 @@ func (h *HTTPHandlers) createSandbox(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-ctx.Done():
-			// Check the job status one last time to distinguish between a timeout vs a fast failure that happened after the last event was received.
-			job, err := h.riverClient.JobGet(r.Context(), jobID)
+			job, err := h.riverClient.JobGet(ctx, jobID)
 
-			if err == nil {
-				switch job.State {
-				case rivertype.JobStateCompleted:
-					finalSbx, fetchErr := h.sandboxSvc.GetByID(r.Context(), sbxRow.ID)
-					if fetchErr != nil {
-						log.Printf("fetch sandbox after job completed: %v", fetchErr)
-						http.Error(w, sandboxpkg.ErrMsgFetchSandboxFailed, http.StatusInternalServerError)
-						return
-					}
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(http.StatusCreated)
-					_ = json.NewEncoder(w).Encode(finalSbx)
-					return
-
-				case rivertype.JobStateDiscarded:
-					log.Printf("create_sandbox job discarded: sandbox=%s job=%d state=%s", sbxRow.ID, jobID, job.State)
-					_ = markSandboxFailed(r.Context(), h.db, sbxRow.ID)
-					http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusBadGateway)
+			if err == nil && job.State == rivertype.JobStateCompleted {
+				finalSbx, fetchErr := h.sandboxSvc.GetByID(ctx, sbxRow.ID)
+				if fetchErr != nil {
+					log.Printf("fetch sandbox after job completed: %v", fetchErr)
+					http.Error(w, sandboxpkg.ErrMsgFetchSandboxFailed, http.StatusInternalServerError)
 					return
 				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(finalSbx)
+				return
 			}
+
+			log.Printf("create_sandbox timed out: sandbox=%s job=%d", sbxRow.ID, jobID)
+			_ = markSandboxFailed(ctx, h.db, sbxRow.ID)
+			http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusGatewayTimeout)
+			return
 
 		case event, ok := <-eventCh:
 			if !ok {
