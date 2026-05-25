@@ -8,9 +8,12 @@ worker_heartbeat_interval: 5s
 worker_cpu_budget: 4
 worker_mem_budget: 8192
 
-# Stable identifier used for create_worker --id.
-# Derived from inventory hostname so re-runs always hit the same DB row.
-worker_id: "{{ inventory_hostname }}"
+# Stable identifier used for create_worker --id AND passed as WORKER_ID to
+# the worker process. Using ansible_hostname (the VM's actual OS hostname)
+# keeps registration and runtime in sync — the worker defaults to
+# os.Hostname() when WORKER_ID is unset, so this prevents duplicate DB rows
+# on hosts where inventory_hostname differs from the real hostname.
+worker_id: "{{ ansible_hostname }}"
 
 # Address the orchestrator dials to reach this worker over gRPC.
 # Defaults to the primary interface IP auto-detected by Ansible.

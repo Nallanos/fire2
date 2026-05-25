@@ -49,6 +49,21 @@ func NewWorkerService(docker docker.ClientInterface, db db.Querier) *WorkerServi
 	}
 }
 
+// SetWorkerIdentity pins the worker ID and advertised address so heartbeats
+// and event reports use consistent values instead of falling back to
+// os.Hostname() and interface auto-detection. Call once at startup before
+// the heartbeat loop begins. Empty strings are ignored.
+func (w *WorkerService) SetWorkerIdentity(id, address string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if id != "" {
+		w.worker.ID = id
+	}
+	if address != "" {
+		w.worker.Address = address
+	}
+}
+
 func (w *WorkerService) CreateSandbox(ctx context.Context, in CreateSandboxInput) (db.Sandbox, error) {
 	// Check if worker has capacity to handle new sandbox
 	w.mu.Lock()

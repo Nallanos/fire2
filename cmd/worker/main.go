@@ -32,6 +32,12 @@ func main() {
 		orchestratorAddr = "127.0.0.1:7001"
 	}
 
+	workerID := os.Getenv("WORKER_ID")
+	if workerID == "" {
+		workerID, _ = os.Hostname()
+	}
+	advertisedHost := os.Getenv("WORKER_ADVERTISED_HOST")
+
 	sqlDB, err := sql.Open("pgx", databaseURL)
 	if err != nil {
 		log.Fatal(err)
@@ -45,13 +51,13 @@ func main() {
 
 	queries := db.New(sqlDB)
 	workerService := workerpkg.NewWorkerService(dockerClient, queries)
+	workerService.SetWorkerIdentity(workerID, advertisedHost)
 	workerGRPCServer := workerpkg.NewWorkerGRPCServer(workerService)
 
 	if eventClient, err := orchestrator.NewEventClient(context.Background(), orchestratorAddr); err != nil {
 		log.Printf("event client init failed: %v", err)
 	} else {
 		defer eventClient.Close()
-		workerID, _ := os.Hostname()
 		reporter := workerpkg.NewEventReporter(dockerClient, eventClient.Client(), workerID)
 		go reporter.Run(context.Background())
 	}
