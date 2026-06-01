@@ -23,6 +23,9 @@ type ClientInterface interface {
 	StopContainer(ctx context.Context, containerID string) error
 	RemoveContainer(ctx context.Context, containerID string) error
 	InspectImage(ctx context.Context, img string) error
+	// FindContainerBySandboxID returns the Docker container ID for the given sandbox ID label,
+	// or ("", nil) if no such container exists.
+	FindContainerBySandboxID(ctx context.Context, sandboxID string) (string, error)
 	Events(ctx context.Context) (<-chan EventMessage, <-chan error)
 }
 
@@ -137,6 +140,11 @@ type EventMessage struct {
 	Action string
 	Actor  EventActor
 	Time   int64
+}
+
+// FindContainerBySandboxID returns the Docker container ID whose sandbox_id label matches.
+func (c *Client) FindContainerBySandboxID(ctx context.Context, sandboxID string) (string, error) {
+	return getContainerByLabel(ctx, c.cli, "sandbox_id", sandboxID)
 }
 
 func getContainerByLabel(ctx context.Context, cli *client.Client, labelKey string, labelValue string) (string, error) {

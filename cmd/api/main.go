@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"log"
 	"net/http"
 	"os"
@@ -10,25 +9,66 @@ import (
 	"syscall"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivermigrate"
 
 	"github/nallanos/fire2/internal/app"
-	dbpkg "github/nallanos/fire2/internal/db"
 	"github/nallanos/fire2/internal/packages/orchestrator"
+	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
+	workerpkg "github/nallanos/fire2/internal/packages/worker"
 )
 
 func main() {
 	cfg := app.ConfigFromEnv()
+	ctx := context.Background()
 
-	sqlDB, err := sql.Open("pgx", cfg.DatabaseURL)
-	defer sqlDB.Close()
-
+	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("pgxpool.New: %v", err)
+	}
+	defer pool.Close()
+
+	migrator, err := rivermigrate.New(riverpgxv5.New(pool), nil)
+	if err != nil {
+		log.Fatalf("rivermigrate.New: %v", err)
+	}
+	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
+		log.Fatalf("river migrate up: %v", err)
 	}
 
-	queries := dbpkg.New(sqlDB)
-	a := app.New(cfg, sqlDB)
+	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
+	workerRepo := workerpkg.NewPostgresRepository(pool)
+	eventRepo := orchestrator.NewEventRepository(pool)
+
+	workers := river.NewWorkers()
+	river.AddWorker(workers, orchestrator.NewCreateSandboxWorker(pool, sandboxRepo, workerRepo))
+	river.AddWorker(workers, orchestrator.NewCleanupSandboxWorker(sandboxRepo, workerRepo))
+
+	riverClient, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
+		Queues: map[string]river.QueueConfig{
+			river.QueueDefault: {MaxWorkers: 10},
+			"cleanup":          {MaxWorkers: 5},
+		},
+		Workers:     workers,
+		MaxAttempts: 5,
+		RetryPolicy: &orchestrator.StrongRetryPolicy{},
+	})
+	if err != nil {
+		log.Fatalf("river.NewClient: %v", err)
+	}
+
+	if err := riverClient.Start(ctx); err != nil {
+		log.Fatalf("riverClient.Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = riverClient.Stop(stopCtx)
+	}()
+
+	a := app.New(cfg, pool, riverClient)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -46,7 +86,8 @@ func main() {
 	go func() {
 		grpcAddr := ":" + cfg.OrchestratorGRPCPort
 		log.Printf("orchestrator gRPC listening on %s", grpcAddr)
-		grpcErrCh <- orchestrator.ServeEventGRPC(grpcAddr, orchestrator.NewEventGRPCServer(queries))
+		grpcErrCh <- orchestrator.ServeEventGRPC(grpcAddr,
+			orchestrator.NewEventGRPCServer(sandboxRepo, eventRepo))
 	}()
 
 	sigCh := make(chan os.Signal, 1)
@@ -61,8 +102,7 @@ func main() {
 		log.Printf("grpc server error: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	_ = srv.Shutdown(ctx)
+	_ = srv.Shutdown(shutdownCtx)
 }

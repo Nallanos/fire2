@@ -17,23 +17,25 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	"github/nallanos/fire2/internal/db"
-	"github/nallanos/fire2/internal/packages/sandbox"
+	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
 )
 
 type EventGRPCServer struct {
 	orchestratorv1.UnimplementedOrchestratorServiceServer
-	db db.Querier
+	sandboxRepo sandboxpkg.Repository
+	eventRepo   EventRepository
 }
 
-func NewEventGRPCServer(db db.Querier) *EventGRPCServer {
-	return &EventGRPCServer{db: db}
+func NewEventGRPCServer(sandboxRepo sandboxpkg.Repository, eventRepo EventRepository) *EventGRPCServer {
+	return &EventGRPCServer{sandboxRepo: sandboxRepo, eventRepo: eventRepo}
 }
 
-// IngestSandboxEvent stores a sandbox event from a worker and updates sandbox status based on the event action.
+// IngestSandboxEvent stores a sandbox event and updates sandbox status.
+// State ownership: the create-sandbox job owns transitions pending→running.
+// Events own transitions starting→running and running/starting→failed only.
 func (s *EventGRPCServer) IngestSandboxEvent(ctx context.Context, req *orchestratorv1.SandboxEvent) (*emptypb.Empty, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "missing docker event")
+		return nil, status.Error(codes.InvalidArgument, "missing sandbox event")
 	}
 
 	eventID := strings.TrimSpace(req.GetId())
@@ -74,7 +76,7 @@ func (s *EventGRPCServer) IngestSandboxEvent(ctx context.Context, req *orchestra
 		return nil, status.Errorf(codes.InvalidArgument, "invalid attributes: %v", err)
 	}
 
-	_, err = s.db.CreateSandboxEvent(ctx, db.CreateSandboxEventParams{
+	_, err = s.eventRepo.CreateSandboxEvent(ctx, SandboxEvent{
 		ID:          eventID,
 		SandboxID:   sandboxID,
 		ContainerID: containerID,
@@ -86,19 +88,52 @@ func (s *EventGRPCServer) IngestSandboxEvent(ctx context.Context, req *orchestra
 		OccurredAt:  occurredAt,
 	})
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "store docker event: %v", err)
+		return nil, status.Errorf(codes.Internal, "store sandbox event: %v", err)
 	}
 
-	if statusValue, ok := sandboxStatusForAction(action); ok {
-		if _, updateErr := s.db.UpdateSandbox(ctx, db.UpdateSandboxParams{
-			ID:     sandboxID,
-			Status: statusValue,
-		}); updateErr != nil {
-			log.Printf("update sandbox status failed: sandbox=%s action=%s err=%v", sandboxID, action, updateErr)
-		}
-	}
+	s.applyStatusFromAction(ctx, sandboxID, action)
 
 	return &emptypb.Empty{}, nil
+}
+
+// applyStatusFromAction applies a guarded status update based on the Docker action.
+// Updates are only applied when the sandbox is in a state the event handler owns.
+// rowsAffected=0 means the guard rejected the update (sandbox in a state the job owns).
+func (s *EventGRPCServer) applyStatusFromAction(ctx context.Context, sandboxID, action string) {
+	target, allowedFrom, ok := statusTransitionForAction(action)
+	if !ok {
+		return
+	}
+
+	_, n, err := s.sandboxRepo.UpdateStatus(ctx, sandboxID, target, allowedFrom...)
+	if err != nil {
+		log.Printf("update sandbox status failed: sandbox=%s action=%s err=%v", sandboxID, action, err)
+		return
+	}
+	if n == 0 {
+		log.Printf("ignored sandbox event: sandbox=%s action=%s — current status not in allowed set", sandboxID, action)
+	}
+}
+
+// statusTransitionForAction returns the target status and the set of allowed
+// source statuses for a given Docker action. The create-sandbox job owns all
+// transitions before running; events only advance starting→running or
+// flip running/starting→failed.
+func statusTransitionForAction(action string) (sandboxpkg.Status, []sandboxpkg.Status, bool) {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "start":
+		return sandboxpkg.StatusRunning, []sandboxpkg.Status{
+			sandboxpkg.StatusStarting,
+			sandboxpkg.StatusRunning,
+		}, true
+	case "die", "stop", "kill", "oom":
+		return sandboxpkg.StatusFailed, []sandboxpkg.Status{
+			sandboxpkg.StatusStarting,
+			sandboxpkg.StatusRunning,
+		}, true
+	default:
+		return "", nil, false
+	}
 }
 
 func ServeEventGRPC(address string, srv orchestratorv1.OrchestratorServiceServer, opts ...grpc.ServerOption) error {
@@ -132,15 +167,4 @@ func (c *EventClient) Client() orchestratorv1.OrchestratorServiceClient {
 
 func (c *EventClient) Close() error {
 	return c.conn.Close()
-}
-
-func sandboxStatusForAction(action string) (string, bool) {
-	switch strings.ToLower(strings.TrimSpace(action)) {
-	case "start":
-		return string(sandbox.StatusRunning), true
-	case "die", "stop", "kill", "oom":
-		return string(sandbox.StatusFailed), true
-	default:
-		return "", false
-	}
 }

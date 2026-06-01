@@ -1,11 +1,17 @@
 package app
 
-import "os"
+import (
+	"os"
+	"time"
+)
 
 type Config struct {
 	Port                 string
 	DatabaseURL          string
 	OrchestratorGRPCPort string
+	// SandboxWaitTimeout overrides the 45-second default in the createSandbox
+	// handler. Zero means use the default. Intended for tests.
+	SandboxWaitTimeout time.Duration
 }
 
 func ConfigFromEnv() Config {

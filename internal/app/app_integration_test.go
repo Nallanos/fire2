@@ -17,48 +17,55 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivermigrate"
+	"github.com/riverqueue/river/rivertype"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
+	"google.golang.org/grpc"
 
 	workerv1 "github/nallanos/fire2/gen/worker/v1"
-	"github/nallanos/fire2/internal/db"
-
-	"google.golang.org/grpc"
-	"google.golang.org/protobuf/types/known/timestamppb"
+	"github/nallanos/fire2/internal/packages/orchestrator"
+	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
+	workerpkg "github/nallanos/fire2/internal/packages/worker"
 )
 
 func TestSandboxAPIFlow(t *testing.T) {
 	ctx := context.Background()
-	sqlDB, cleanup := setupPostgres(t, ctx)
+	sqlDB, pool, cleanup := setupPostgresWithPool(t, ctx)
 	defer cleanup()
 
 	if err := applyMigrations(sqlDB); err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
 
-	queries := db.New(sqlDB)
-	workerAddr, workerPort := startFakeWorker(t, queries)
+	workerAddr, workerPort := startFakeWorker(t)
 	defer workerAddr.stop()
 
-	_, err := queries.CreateWorker(ctx, db.CreateWorkerParams{
-		ID:            "worker-1",
-		Status:        "active",
-		Address:       workerAddr.host,
-		Capacity:      4,
-		Port:          int32(workerPort),
-		CpuBudget:     4,
-		MemBudget:     4096,
-		CpuUsage:      0,
-		MemUsage:      0,
-		LastHeartbeat: time.Now().UTC(),
-		CreatedAt:     time.Now().UTC(),
+	workerRepo := workerpkg.NewPostgresRepository(pool)
+	_, err := workerRepo.Create(ctx, workerpkg.Worker{
+		ID:      "worker-1",
+		Status:  workerpkg.WorkerStatusActive,
+		Address: workerAddr.host,
+		Port:    workerPort,
+		Budget: workerpkg.Worker_Budget{
+			Cpu_budget: 4,
+			Mem_budget: 4096,
+		},
+		Capacity:       4,
+		Last_heartbeat: time.Now().UTC(),
 	})
 	if err != nil {
 		t.Fatalf("create worker: %v", err)
 	}
 
+	riverClient := setupFastRiverClient(t, ctx, pool)
+
 	cfg := Config{Port: "0", DatabaseURL: ""}
-	app := New(cfg, sqlDB)
+	app := New(cfg, pool, riverClient)
 
 	srv := httptest.NewServer(app.Router())
 	defer srv.Close()
@@ -79,7 +86,58 @@ func TestSandboxAPIFlow(t *testing.T) {
 	}
 }
 
-func setupPostgres(t *testing.T, ctx context.Context) (*sql.DB, func()) {
+func setupFastRiverClient(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *river.Client[pgx.Tx] {
+	t.Helper()
+
+	migrator, err := rivermigrate.New(riverpgxv5.New(pool), nil)
+	if err != nil {
+		t.Fatalf("rivermigrate.New: %v", err)
+	}
+	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
+		t.Fatalf("river migrate up: %v", err)
+	}
+
+	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
+	workerRepo := workerpkg.NewPostgresRepository(pool)
+
+	workers := river.NewWorkers()
+	river.AddWorker(workers, orchestrator.NewCreateSandboxWorker(pool, sandboxRepo, workerRepo))
+	river.AddWorker(workers, orchestrator.NewCleanupSandboxWorker(sandboxRepo, workerRepo))
+
+	riverClient, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
+		Queues: map[string]river.QueueConfig{
+			river.QueueDefault: {MaxWorkers: 10},
+			"cleanup":          {MaxWorkers: 5},
+		},
+		Workers:     workers,
+		MaxAttempts: 5,
+		RetryPolicy: &fastRetryPolicy{},
+	})
+	if err != nil {
+		t.Fatalf("river.NewClient: %v", err)
+	}
+
+	if err := riverClient.Start(ctx); err != nil {
+		t.Fatalf("riverClient.Start: %v", err)
+	}
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = riverClient.Stop(stopCtx)
+	})
+
+	return riverClient
+}
+
+type fastRetryPolicy struct{}
+
+func (p *fastRetryPolicy) NextRetry(_ *rivertype.JobRow) time.Time {
+	return time.Now().Add(50 * time.Millisecond)
+}
+
+func setupPostgresWithPool(t *testing.T, ctx context.Context) (*sql.DB, *pgxpool.Pool, func()) {
+	t.Helper()
+
 	container, err := postgres.RunContainer(ctx,
 		postgres.WithDatabase("fire2"),
 		postgres.WithUsername("fire2"),
@@ -95,22 +153,31 @@ func setupPostgres(t *testing.T, ctx context.Context) (*sql.DB, func()) {
 		t.Fatalf("connection string: %v", err)
 	}
 
-	sqlDB, err := sql.Open("pgx", connStr)
+	pool, err := pgxpool.New(ctx, connStr)
 	if err != nil {
 		_ = container.Terminate(ctx)
-		t.Fatalf("open db: %v", err)
+		t.Fatalf("pgxpool.New: %v", err)
 	}
+
+	sqlDB := stdlib.OpenDBFromPool(pool)
 	if err := waitForDB(ctx, sqlDB, 20*time.Second); err != nil {
 		_ = sqlDB.Close()
+		pool.Close()
 		_ = container.Terminate(ctx)
 		t.Fatalf("wait for db: %v", err)
 	}
 
 	cleanup := func() {
 		_ = sqlDB.Close()
+		pool.Close()
 		_ = container.Terminate(ctx)
 	}
 
+	return sqlDB, pool, cleanup
+}
+
+func setupPostgres(t *testing.T, ctx context.Context) (*sql.DB, func()) {
+	sqlDB, _, cleanup := setupPostgresWithPool(t, ctx)
 	return sqlDB, cleanup
 }
 
@@ -198,14 +265,14 @@ func (f fakeWorkerAddress) stop() {
 	_ = f.lis.Close()
 }
 
-func startFakeWorker(t *testing.T, queries *db.Queries) (fakeWorkerAddress, int) {
+func startFakeWorker(t *testing.T) (fakeWorkerAddress, int) {
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 
 	grpcServer := grpc.NewServer()
-	workerv1.RegisterWorkerServiceServer(grpcServer, &fakeWorkerServer{queries: queries})
+	workerv1.RegisterWorkerServiceServer(grpcServer, &fakeWorkerGRPCServer{})
 
 	go func() {
 		_ = grpcServer.Serve(lis)
@@ -215,52 +282,24 @@ func startFakeWorker(t *testing.T, queries *db.Queries) (fakeWorkerAddress, int)
 	return fakeWorkerAddress{host: addr.IP.String(), server: grpcServer, lis: lis}, addr.Port
 }
 
-type fakeWorkerServer struct {
+type fakeWorkerGRPCServer struct {
 	workerv1.UnimplementedWorkerServiceServer
-	queries *db.Queries
 }
 
-func (f *fakeWorkerServer) CreateSandbox(ctx context.Context, req *workerv1.CreateSandboxRequest) (*workerv1.CreateSandboxResponse, error) {
-	createdAt := time.Now().UTC()
-	sandbox, err := f.queries.CreateSandbox(ctx, db.CreateSandboxParams{
-		ID:         req.GetId(),
-		Runtime:    req.GetRuntime(),
-		Status:     "running",
-		Image:      req.GetImage(),
-		Port:       req.GetPort(),
-		Ttl:        req.GetTtl(),
-		PreviewUrl: req.GetPreviewUrl(),
-		CreatedAt:  createdAt,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return &workerv1.CreateSandboxResponse{
-		Sandbox: &workerv1.Sandbox{
-			Id:         sandbox.ID,
-			Runtime:    sandbox.Runtime,
-			Status:     sandbox.Status,
-			Ttl:        sandbox.Ttl,
-			CreatedAt:  timestamppb.New(sandbox.CreatedAt),
-			Port:       sandbox.Port,
-			PreviewUrl: sandbox.PreviewUrl,
-			Image:      sandbox.Image,
-		},
-	}, nil
+func (f *fakeWorkerGRPCServer) CreateSandbox(_ context.Context, _ *workerv1.CreateSandboxRequest) (*workerv1.CreateSandboxResponse, error) {
+	return &workerv1.CreateSandboxResponse{}, nil
 }
 
-func (f *fakeWorkerServer) GetWorkerInfo(ctx context.Context, _ *workerv1.GetWorkerInfoRequest) (*workerv1.GetWorkerInfoResponse, error) {
+func (f *fakeWorkerGRPCServer) GetWorkerInfo(_ context.Context, _ *workerv1.GetWorkerInfoRequest) (*workerv1.GetWorkerInfoResponse, error) {
 	return &workerv1.GetWorkerInfoResponse{
-		Id:            "worker-1",
-		Address:       "127.0.0.1",
-		Status:        "active",
-		CpuBudget:     4,
-		MemBudget:     4096,
-		Capacity:      4,
-		CpuUsage:      0,
-		MemUsage:      0,
-		LastHeartbeat: timestamppb.New(time.Now().UTC()),
+		Id:        "worker-1",
+		Address:   "127.0.0.1",
+		Status:    "active",
+		CpuBudget: 4,
+		MemBudget: 4096,
+		Capacity:  4,
+		CpuUsage:  0,
+		MemUsage:  0,
 	}, nil
 }
 
@@ -341,4 +380,5 @@ type sandboxResponse struct {
 	Port       int32           `json:"port"`
 	PreviewURL string          `json:"preview_url"`
 	Image      string          `json:"image"`
+	WorkerID   *string         `json:"worker_id"`
 }
