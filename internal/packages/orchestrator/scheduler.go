@@ -8,13 +8,13 @@ import (
 	"time"
 
 	workerv1 "github/nallanos/fire2/gen/worker/v1"
-	"github/nallanos/fire2/internal/db"
+	workerpkg "github/nallanos/fire2/internal/packages/worker"
 )
 
 var ErrNoWorkerCandidates = errors.New("no worker candidates available")
 
 type WorkerCandidate struct {
-	Worker db.Worker
+	Worker workerpkg.Worker
 	Info   *workerv1.GetWorkerInfoResponse
 }
 
@@ -174,7 +174,7 @@ func leftRatio(usage, budget int32) float64 {
 }
 
 func isActiveWorker(candidate WorkerCandidate) bool {
-	workerStatus := strings.ToLower(strings.TrimSpace(candidate.Worker.Status))
+	workerStatus := strings.ToLower(strings.TrimSpace(string(candidate.Worker.Status)))
 	infoStatus := strings.ToLower(strings.TrimSpace(candidate.Info.GetStatus()))
 
 	if workerStatus == "" && infoStatus == "" {

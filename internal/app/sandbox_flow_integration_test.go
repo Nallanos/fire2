@@ -22,23 +22,26 @@ import (
 
 	orchestratorv1 "github/nallanos/fire2/gen/orchestrator/v1"
 	workerpb "github/nallanos/fire2/gen/worker/v1"
-	"github/nallanos/fire2/internal/db"
 	"github/nallanos/fire2/internal/packages/docker"
 	"github/nallanos/fire2/internal/packages/orchestrator"
+	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
 	workerpkg "github/nallanos/fire2/internal/packages/worker"
 )
 
 func TestSandboxFlowWithMultipleWorkers(t *testing.T) {
 	ctx := context.Background()
-	sqlDB, cleanup := setupPostgres(t, ctx)
+	sqlDB, pool, cleanup := setupPostgresWithPool(t, ctx)
 	defer cleanup()
 
 	if err := applyMigrations(sqlDB); err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
 
-	queries := db.New(sqlDB)
-	grpcAddr, stopGRPC := startOrchestratorGRPC(t, queries)
+	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
+	workerRepo := workerpkg.NewPostgresRepository(pool)
+	eventRepo := orchestrator.NewEventRepository(pool)
+
+	grpcAddr, stopGRPC := startOrchestratorGRPC(t, sandboxRepo, eventRepo)
 	defer stopGRPC()
 
 	dockerClient, err := docker.NewClient()
@@ -46,13 +49,13 @@ func TestSandboxFlowWithMultipleWorkers(t *testing.T) {
 		t.Fatalf("docker client: %v", err)
 	}
 
-	workerAddr, workerPort, stopWorker := startWorkerServer(t, dockerClient, queries, "worker-a", 8, 4, 4096)
+	workerAddr, workerPort, stopWorker := startWorkerServer(t, dockerClient, workerRepo, "worker-a", 8, 4, 4096)
 	defer stopWorker()
 
-	if err := registerWorker(ctx, queries, "worker-a", workerAddr, workerPort, 8, 4, 4096); err != nil {
+	if err := registerWorker(ctx, workerRepo, "worker-a", workerAddr, workerPort, 8, 4, 4096); err != nil {
 		t.Fatalf("register worker-a: %v", err)
 	}
-	if err := registerWorker(ctx, queries, "worker-b", workerAddr, workerPort, 4, 2, 2048); err != nil {
+	if err := registerWorker(ctx, workerRepo, "worker-b", workerAddr, workerPort, 4, 2, 2048); err != nil {
 		t.Fatalf("register worker-b: %v", err)
 	}
 
@@ -67,8 +70,10 @@ func TestSandboxFlowWithMultipleWorkers(t *testing.T) {
 	defer cancelReporter()
 	go reporter.Run(reporterCtx)
 
+	riverClient := setupFastRiverClient(t, ctx, pool)
+
 	cfg := Config{Port: "0", DatabaseURL: ""}
-	app := New(cfg, sqlDB)
+	app := New(cfg, pool, riverClient)
 	srv := httptest.NewServer(app.Router())
 	defer srv.Close()
 
@@ -100,14 +105,14 @@ func TestSandboxFlowWithMultipleWorkers(t *testing.T) {
 	}
 }
 
-func startOrchestratorGRPC(t *testing.T, queries *db.Queries) (string, func()) {
+func startOrchestratorGRPC(t *testing.T, sandboxRepo sandboxpkg.Repository, eventRepo orchestrator.EventRepository) (string, func()) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("orchestrator listen: %v", err)
 	}
 
 	grpcServer := grpc.NewServer()
-	orchestratorv1.RegisterOrchestratorServiceServer(grpcServer, orchestrator.NewEventGRPCServer(queries))
+	orchestratorv1.RegisterOrchestratorServiceServer(grpcServer, orchestrator.NewEventGRPCServer(sandboxRepo, eventRepo))
 
 	go func() {
 		_ = grpcServer.Serve(listener)
@@ -121,14 +126,14 @@ func startOrchestratorGRPC(t *testing.T, queries *db.Queries) (string, func()) {
 	return listener.Addr().String(), cleanup
 }
 
-func startWorkerServer(t *testing.T, dockerClient docker.ClientInterface, queries *db.Queries, workerID string, capacity, cpuBudget, memBudget int) (string, int, func()) {
+func startWorkerServer(t *testing.T, dockerClient docker.ClientInterface, workerRepo workerpkg.Repository, workerID string, capacity, cpuBudget, memBudget int) (string, int, func()) {
 	listener, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
 		t.Fatalf("worker listen: %v", err)
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
 
-	workerService := workerpkg.NewWorkerService(dockerClient, queries)
+	workerService := workerpkg.NewWorkerService(dockerClient, workerRepo)
 	setWorkerInfo(t, workerService, workerpkg.Worker{
 		ID:       workerID,
 		Address:  "127.0.0.1",
@@ -166,19 +171,18 @@ func setWorkerInfo(t *testing.T, svc *workerpkg.WorkerService, info workerpkg.Wo
 	reflect.NewAt(v.Type(), unsafe.Pointer(v.UnsafeAddr())).Elem().Set(reflect.ValueOf(info))
 }
 
-func registerWorker(ctx context.Context, queries *db.Queries, id, address string, port, capacity, cpuBudget, memBudget int) error {
-	_, err := queries.CreateWorker(ctx, db.CreateWorkerParams{
-		ID:            id,
-		Status:        "active",
-		Address:       address,
-		Capacity:      int32(capacity),
-		Port:          int32(port),
-		CpuBudget:     int32(cpuBudget),
-		MemBudget:     int32(memBudget),
-		CpuUsage:      0,
-		MemUsage:      0,
-		LastHeartbeat: time.Now().UTC(),
-		CreatedAt:     time.Now().UTC(),
+func registerWorker(ctx context.Context, repo workerpkg.Repository, id, address string, port, capacity, cpuBudget, memBudget int) error {
+	_, err := repo.Create(ctx, workerpkg.Worker{
+		ID:      id,
+		Status:  workerpkg.WorkerStatusActive,
+		Address: address,
+		Capacity: capacity,
+		Port:    port,
+		Budget: workerpkg.Worker_Budget{
+			Cpu_budget: cpuBudget,
+			Mem_budget: memBudget,
+		},
+		Last_heartbeat: time.Now().UTC(),
 	})
 	return err
 }

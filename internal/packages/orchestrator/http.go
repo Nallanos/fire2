@@ -10,28 +10,41 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 
-	workerv1 "github/nallanos/fire2/gen/worker/v1"
-	"github/nallanos/fire2/internal/db"
 	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
+	workerpkg "github/nallanos/fire2/internal/packages/worker"
 )
 
 type HTTPHandlers struct {
-	sandboxSvc *sandboxpkg.Service
-	db         db.Querier
+	pool        *pgxpool.Pool
+	sandboxRepo sandboxpkg.Repository
+	workerRepo  workerpkg.Repository
+	riverClient *river.Client[pgx.Tx]
 }
 
-func NewHTTPHandlers(sandboxSvc *sandboxpkg.Service, db db.Querier) *HTTPHandlers {
-	return &HTTPHandlers{sandboxSvc: sandboxSvc, db: db}
+func NewHTTPHandlers(
+	pool *pgxpool.Pool,
+	sandboxRepo sandboxpkg.Repository,
+	workerRepo workerpkg.Repository,
+	riverClient *river.Client[pgx.Tx],
+) *HTTPHandlers {
+	return &HTTPHandlers{
+		pool:        pool,
+		sandboxRepo: sandboxRepo,
+		workerRepo:  workerRepo,
+		riverClient: riverClient,
+	}
 }
 
 func (h *HTTPHandlers) Routes() http.Handler {
 	r := chi.NewRouter()
-
 	r.Post("/", h.createSandbox)
 	r.Get("/", h.listSandboxes)
 	r.Get("/{id}", h.getSandboxByID)
-
 	return r
 }
 
@@ -56,8 +69,14 @@ func (h *HTTPHandlers) createSandbox(w http.ResponseWriter, r *http.Request) {
 	if body.TTL <= 0 {
 		body.TTL = 3600
 	}
+	if h.riverClient == nil {
+		log.Printf("river client is not configured")
+		http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusInternalServerError)
+		return
+	}
 
-	workers, err := h.db.ListWorkers(r.Context())
+	// Fast-path: refuse early if no workers are registered.
+	workers, err := h.workerRepo.List(r.Context())
 	if err != nil {
 		log.Printf("list workers failed: %v", err)
 		http.Error(w, "failed to list workers", http.StatusInternalServerError)
@@ -73,29 +92,98 @@ func (h *HTTPHandlers) createSandbox(w http.ResponseWriter, r *http.Request) {
 	if image == "" {
 		image = defaultImageForRuntime(body.Runtime)
 	}
-
 	port := body.Port
 	if port <= 0 {
 		port = defaultSandboxPort()
 	}
 
-	grpcResp, err := CreateSandboxOnLeastUsedWorker(r.Context(), workers, &workerv1.CreateSandboxRequest{
-		Id:         uuid.NewString(),
+	// Subscribe before the insert so we don't miss the completion event.
+	eventCh, cancelSub := h.riverClient.Subscribe(
+		river.EventKindJobCompleted,
+		river.EventKindJobFailed,
+		river.EventKindJobCancelled,
+	)
+	defer cancelSub()
+
+	// Atomically create the sandbox row and enqueue the river job.
+	sandboxID := uuid.NewString()
+	tx, err := h.pool.Begin(r.Context())
+	if err != nil {
+		log.Printf("begin tx failed: %v", err)
+		http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusInternalServerError)
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+
+	_, err = h.sandboxRepo.WithTx(tx).Create(r.Context(), sandboxpkg.Sandbox{
+		ID:         sandboxID,
 		Runtime:    body.Runtime,
+		Status:     sandboxpkg.StatusPending,
 		Image:      image,
 		Port:       port,
-		Ttl:        body.TTL,
-		PreviewUrl: body.PreviewURL,
+		TTL:        body.TTL,
+		PreviewURL: body.PreviewURL,
+		CreatedAt:  time.Now().UTC(),
 	})
 	if err != nil {
-		log.Printf("create sandbox failed: runtime=%s image=%s port=%d ttl=%d workers=%d err=%v", body.Runtime, image, port, body.TTL, len(workers), err)
-		http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusBadGateway)
+		log.Printf("create sandbox record failed: id=%s err=%v", sandboxID, err)
+		http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusInternalServerError)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(grpcResp.GetSandbox())
+	insertRes, err := h.riverClient.InsertTx(r.Context(), tx, CreateSandboxArgs{SandboxID: sandboxID}, nil)
+	if err != nil {
+		log.Printf("insert river job failed: id=%s err=%v", sandboxID, err)
+		http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusInternalServerError)
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		log.Printf("commit tx failed: id=%s err=%v", sandboxID, err)
+		http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusInternalServerError)
+		return
+	}
+
+	jobID := insertRes.Job.ID
+
+	for {
+		select {
+		case <-r.Context().Done():
+			log.Printf("create sandbox request canceled: id=%s err=%v", sandboxID, r.Context().Err())
+			return
+		case event, ok := <-eventCh:
+			if !ok {
+				log.Printf("river subscription closed before job completion: id=%s job=%d", sandboxID, jobID)
+				http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusBadGateway)
+				return
+			}
+			if event == nil || event.Job == nil || event.Job.ID != jobID {
+				continue
+			}
+
+			switch event.Kind {
+			case river.EventKindJobCompleted:
+				sbx, fetchErr := h.sandboxRepo.GetByID(r.Context(), sandboxID)
+				if fetchErr != nil {
+					http.Error(w, sandboxpkg.ErrMsgFetchSandboxFailed, http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(sbx)
+				return
+			case river.EventKindJobCancelled:
+				http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusBadGateway)
+				return
+			case river.EventKindJobFailed:
+				if event.Job.State != rivertype.JobStateDiscarded {
+					continue
+				}
+				http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusBadGateway)
+				return
+			}
+		}
+	}
 }
 
 func (h *HTTPHandlers) getSandboxByID(w http.ResponseWriter, r *http.Request) {
@@ -105,7 +193,7 @@ func (h *HTTPHandlers) getSandboxByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sbx, err := h.sandboxSvc.GetByID(r.Context(), id)
+	sbx, err := h.sandboxRepo.GetByID(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, sandboxpkg.ErrNotFound) {
 			http.Error(w, sandboxpkg.ErrMsgNotFound, http.StatusNotFound)
@@ -120,7 +208,7 @@ func (h *HTTPHandlers) getSandboxByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandlers) listSandboxes(w http.ResponseWriter, r *http.Request) {
-	items, err := h.sandboxSvc.List(r.Context())
+	items, err := h.sandboxRepo.List(r.Context())
 	if err != nil {
 		http.Error(w, sandboxpkg.ErrMsgListSandboxesFailed, http.StatusInternalServerError)
 		return

@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"log"
 	"net"
@@ -13,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github/nallanos/fire2/internal/db"
 	"github/nallanos/fire2/internal/packages/docker"
 	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
 )
@@ -23,12 +21,12 @@ const defaultHeartbeatInterval = 5 * time.Second
 const heartbeatRequestTimeout = 3 * time.Second
 
 type WorkerService struct {
-	db          db.Querier
-	sandboxRepo sandboxpkg.Repository
-	sandboxSvc  *sandboxpkg.Service
-	worker      Worker
+	repo       Repository
+	sandboxSvc *sandboxpkg.Service
 
-	mu sync.Mutex // protects access to active count
+	mu               sync.Mutex
+	worker           Worker
+	runningSandboxes map[string]struct{} // keyed by sandbox ID; set is the source of truth for capacity
 }
 
 type CreateSandboxInput struct {
@@ -40,19 +38,17 @@ type CreateSandboxInput struct {
 	PreviewURL string
 }
 
-func NewWorkerService(docker docker.ClientInterface, db db.Querier) *WorkerService {
-	repo := sandboxpkg.NewPostgresRepository(db)
+func NewWorkerService(dockerClient docker.ClientInterface, repo Repository) *WorkerService {
 	return &WorkerService{
-		db:          db,
-		sandboxRepo: repo,
-		sandboxSvc:  sandboxpkg.NewRuntimeService(repo, docker),
+		repo:             repo,
+		sandboxSvc:       sandboxpkg.NewRuntimeService(nil, dockerClient),
+		runningSandboxes: make(map[string]struct{}),
 	}
 }
 
 // SetWorkerIdentity pins the worker ID and advertised address so heartbeats
-// and event reports use consistent values instead of falling back to
-// os.Hostname() and interface auto-detection. Call once at startup before
-// the heartbeat loop begins. Empty strings are ignored.
+// and event reports use consistent values. Call once at startup before the
+// heartbeat loop begins. Empty strings are ignored.
 func (w *WorkerService) SetWorkerIdentity(id, address string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -64,59 +60,52 @@ func (w *WorkerService) SetWorkerIdentity(id, address string) {
 	}
 }
 
-func (w *WorkerService) CreateSandbox(ctx context.Context, in CreateSandboxInput) (db.Sandbox, error) {
-	// Check if worker has capacity to handle new sandbox
+// CreateSandbox starts a container for the sandbox. It is idempotent: if a container
+// with this sandbox ID already exists it is reused; duplicate calls for the same ID
+// don't increment the running set or capacity count.
+func (w *WorkerService) CreateSandbox(ctx context.Context, in CreateSandboxInput) error {
 	w.mu.Lock()
-	if w.worker.running_sandboxes >= w.worker.Capacity {
-		log.Printf("worker at capacity: running=%d capacity=%d", w.worker.running_sandboxes, w.worker.Capacity)
+	if _, alreadyRunning := w.runningSandboxes[in.ID]; alreadyRunning {
 		w.mu.Unlock()
-		return db.Sandbox{}, errors.New("worker at full capacity")
+		return nil // idempotent: already tracking this sandbox
 	}
-	w.worker.running_sandboxes++
+	if len(w.runningSandboxes) >= w.worker.Capacity && w.worker.Capacity > 0 {
+		log.Printf("worker at capacity: running=%d capacity=%d", len(w.runningSandboxes), w.worker.Capacity)
+		w.mu.Unlock()
+		return errors.New("worker at full capacity")
+	}
+	w.runningSandboxes[in.ID] = struct{}{}
 	w.mu.Unlock()
 
-	sandbox, err := w.sandboxSvc.CreateAndStart(ctx, sandboxpkg.RuntimeCreateRequest{
+	if err := w.sandboxSvc.CreateAndStart(ctx, sandboxpkg.RuntimeCreateRequest{
 		ID:         in.ID,
 		Runtime:    in.Runtime,
 		Image:      in.Image,
 		Port:       in.Port,
 		TTL:        in.TTL,
 		PreviewURL: in.PreviewURL,
-	})
-	if err != nil {
-		log.Printf("create sandbox failed: id=%s runtime=%s image=%s port=%d err=%v", in.ID, in.Runtime, in.Image, in.Port, err)
+	}); err != nil {
+		log.Printf("create sandbox failed: id=%s err=%v", in.ID, err)
 		w.mu.Lock()
-		w.worker.running_sandboxes--
+		delete(w.runningSandboxes, in.ID)
 		w.mu.Unlock()
-		return db.Sandbox{}, err
+		return err
 	}
 
-	return db.Sandbox{
-		ID:         sandbox.ID,
-		Runtime:    sandbox.Runtime,
-		Status:     string(sandbox.Status),
-		Ttl:        sandbox.TTL,
-		CreatedAt:  sandbox.CreatedAt,
-		Port:       sandbox.Port,
-		PreviewUrl: sandbox.PreviewURL,
-		Image:      sandbox.Image,
-	}, nil
+	return nil
 }
 
 func (w *WorkerService) StopSandbox(ctx context.Context, containerID string) error {
 	return w.sandboxSvc.Stop(ctx, containerID)
 }
 
-func (w *WorkerService) RemoveSandbox(ctx context.Context, containerID string) error {
-	err := w.sandboxSvc.Remove(ctx, containerID)
-	if err != nil {
+func (w *WorkerService) RemoveSandbox(ctx context.Context, sandboxID string) error {
+	if err := w.sandboxSvc.Remove(ctx, sandboxID); err != nil {
 		return err
 	}
 
 	w.mu.Lock()
-	if w.worker.running_sandboxes > 0 {
-		w.worker.running_sandboxes--
-	}
+	delete(w.runningSandboxes, sandboxID)
 	w.mu.Unlock()
 
 	return nil
@@ -125,7 +114,6 @@ func (w *WorkerService) RemoveSandbox(ctx context.Context, containerID string) e
 func (w *WorkerService) GetWorkerInfo(ctx context.Context) (Worker, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-
 	return w.worker, nil
 }
 
@@ -134,12 +122,9 @@ func (w *WorkerService) RunHeartbeat(ctx context.Context, interval time.Duration
 	if interval <= 0 {
 		interval = defaultHeartbeatInterval
 	}
-
 	w.sendHeartbeat(ctx)
-
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -151,15 +136,14 @@ func (w *WorkerService) RunHeartbeat(ctx context.Context, interval time.Duration
 }
 
 func (w *WorkerService) sendHeartbeat(ctx context.Context) {
-	heartbeatCtx, cancel := context.WithTimeout(ctx, heartbeatRequestTimeout)
+	hctx, cancel := context.WithTimeout(ctx, heartbeatRequestTimeout)
 	defer cancel()
-
-	if _, err := w.UpdateWorker(heartbeatCtx); err != nil {
+	if _, err := w.UpdateWorker(hctx); err != nil {
 		log.Printf("worker heartbeat update failed: %v", err)
 	}
 }
 
-// UpdateWorker updates the worker's status, resource usage, and heartbeat timestamp in the database. It returns the worker ID or an error if the update fails.
+// UpdateWorker updates the worker's status, resource usage, and heartbeat timestamp in the database.
 func (w *WorkerService) UpdateWorker(ctx context.Context) (string, error) {
 	cpuUsage := readCPUUsagePercent()
 	memUsage := readMemUsageMB()
@@ -176,8 +160,6 @@ func (w *WorkerService) UpdateWorker(ctx context.Context) (string, error) {
 	if w.worker.ID == "" {
 		w.worker.ID = hostname
 	}
-
-	// Budget is theoretical and should stay stable once initialized.
 	if w.worker.Budget.Cpu_budget <= 0 {
 		w.worker.Budget.Cpu_budget = runtime.NumCPU()
 		if w.worker.Budget.Cpu_budget < 1 {
@@ -187,7 +169,6 @@ func (w *WorkerService) UpdateWorker(ctx context.Context) (string, error) {
 	if w.worker.Budget.Mem_budget <= 0 {
 		w.worker.Budget.Mem_budget = readMemBudgetMB()
 	}
-
 	if w.worker.Address == "" {
 		w.worker.Address = address
 	}
@@ -199,120 +180,79 @@ func (w *WorkerService) UpdateWorker(ctx context.Context) (string, error) {
 	w.worker.mem_usage = memUsage
 	w.worker.Status = WorkerStatusActive
 	w.worker.Last_heartbeat = time.Now().UTC()
-	workerSnapshot := w.worker
+	snap := w.worker
 	w.mu.Unlock()
 
-	_, err = w.db.UpdateWorker(ctx, db.UpdateWorkerParams{
-		ID:            workerSnapshot.ID,
-		Status:        string(workerSnapshot.Status),
-		Address:       workerSnapshot.Address,
-		Capacity:      int32(workerSnapshot.Capacity),
-		Port:          int32(workerSnapshot.Port),
-		CpuBudget:     int32(workerSnapshot.Budget.Cpu_budget),
-		MemBudget:     int32(workerSnapshot.Budget.Mem_budget),
-		CpuUsage:      int32(workerSnapshot.cpu_usage),
-		MemUsage:      int32(workerSnapshot.mem_usage),
-		LastHeartbeat: workerSnapshot.Last_heartbeat,
-	})
+	_, err = w.repo.Update(ctx, snap)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			_, createErr := w.db.CreateWorker(ctx, db.CreateWorkerParams{
-				ID:            workerSnapshot.ID,
-				Status:        string(workerSnapshot.Status),
-				Address:       workerSnapshot.Address,
-				Capacity:      int32(workerSnapshot.Capacity),
-				Port:          int32(workerSnapshot.Port),
-				CpuBudget:     int32(workerSnapshot.Budget.Cpu_budget),
-				MemBudget:     int32(workerSnapshot.Budget.Mem_budget),
-				CpuUsage:      int32(workerSnapshot.cpu_usage),
-				MemUsage:      int32(workerSnapshot.mem_usage),
-				LastHeartbeat: workerSnapshot.Last_heartbeat,
-				CreatedAt:     workerSnapshot.Last_heartbeat,
-			})
+		if errors.Is(err, ErrNotFound) {
+			_, createErr := w.repo.Create(ctx, snap)
 			if createErr != nil {
 				return "", createErr
 			}
-
-			return workerSnapshot.ID, nil
+			return snap.ID, nil
 		}
-
 		return "", err
 	}
 
-	return workerSnapshot.ID, nil
+	return snap.ID, nil
 }
 
-// detectWorkerAddress attempts to find a non-loopback IPv4 address for the worker. If it fails, it defaults to "127.0.0.1" and returns the error.
 func detectWorkerAddress() (string, error) {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return "127.0.0.1", err
 	}
-
 	for _, addr := range addrs {
 		ipNet, ok := addr.(*net.IPNet)
 		if !ok || ipNet.IP.IsLoopback() {
 			continue
 		}
-
-		ipv4 := ipNet.IP.To4()
-		if ipv4 != nil {
+		if ipv4 := ipNet.IP.To4(); ipv4 != nil {
 			return ipv4.String(), nil
 		}
 	}
-
 	return "", errors.New("no suitable IP address found")
 }
 
-// readMemBudgetMB reads the total memory available on the system in megabytes by parsing /proc/meminfo.
 func readMemBudgetMB() int {
 	data, err := os.ReadFile("/proc/meminfo")
 	if err != nil {
 		return 0
 	}
-
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
+	for _, line := range strings.Split(string(data), "\n") {
 		if strings.HasPrefix(line, "MemTotal:") {
 			fields := strings.Fields(line)
 			if len(fields) < 2 {
 				return 0
 			}
-
-			totalKB, convErr := strconv.Atoi(fields[1])
-			if convErr != nil {
+			kb, err := strconv.Atoi(fields[1])
+			if err != nil {
 				return 0
 			}
-
-			return totalKB / 1024
+			return kb / 1024
 		}
 	}
-
 	return 0
 }
 
-// readCPUUsagePercent reads the 1-minute load average from /proc/loadavg and calculates the CPU usage percentage based on the number of CPU cores. It returns a value between 0 and 100.
 func readCPUUsagePercent() int {
 	data, err := os.ReadFile("/proc/loadavg")
 	if err != nil {
 		return 0
 	}
-
 	fields := strings.Fields(string(data))
 	if len(fields) == 0 {
 		return 0
 	}
-
-	load1, convErr := strconv.ParseFloat(fields[0], 64)
-	if convErr != nil {
+	load1, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil {
 		return 0
 	}
-
 	cpuCount := runtime.NumCPU()
 	if cpuCount < 1 {
 		cpuCount = 1
 	}
-
 	usage := int((load1 / float64(cpuCount)) * 100)
 	if usage < 0 {
 		return 0
@@ -320,50 +260,37 @@ func readCPUUsagePercent() int {
 	if usage > 100 {
 		return 100
 	}
-
 	return usage
 }
 
-// readMemUsageMB reads the current memory usage in megabytes by parsing /proc/meminfo and calculating the difference between total and available memory.
 func readMemUsageMB() int {
 	data, err := os.ReadFile("/proc/meminfo")
 	if err != nil {
 		return 0
 	}
-
-	lines := strings.Split(string(data), "\n")
-	values := map[string]int{}
-	for _, line := range lines {
+	vals := map[string]int{}
+	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
 		}
-
 		key := strings.TrimSuffix(fields[0], ":")
-		v, convErr := strconv.Atoi(fields[1])
-		if convErr != nil {
+		v, err := strconv.Atoi(fields[1])
+		if err != nil {
 			continue
 		}
-		values[key] = v
+		vals[key] = v
 	}
-
-	totalKB, okTotal := values["MemTotal"]
-	availableKB, okAvail := values["MemAvailable"]
-	if !okTotal || !okAvail {
+	total, okT := vals["MemTotal"]
+	avail, okA := vals["MemAvailable"]
+	if !okT || !okA {
 		return 0
 	}
-
-	usedKB := totalKB - availableKB
-	if usedKB < 0 {
-		usedKB = 0
-	}
-
-	usedMB := usedKB / 1024
-	if usedMB < 0 {
+	used := total - avail
+	if used < 0 {
 		return 0
 	}
-
-	return usedMB
+	return used / 1024
 }
 
 func readWorkerPort() int {
@@ -371,11 +298,9 @@ func readWorkerPort() int {
 	if raw == "" {
 		return defaultWorkerPort
 	}
-
 	port, err := strconv.Atoi(raw)
 	if err != nil || port <= 0 {
 		return defaultWorkerPort
 	}
-
 	return port
 }
