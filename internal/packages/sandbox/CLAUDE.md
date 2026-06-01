@@ -1,39 +1,46 @@
 # sandbox package
 
-Domain model, business logic, and PostgreSQL repository for sandboxes.
+## Purpose
 
-## Types
+Domain model and persistence for sandboxes. Owns the status state machine and enforces that status advances only via guarded SQL updates (WHERE status IN (...)). The worker side does NOT write the sandbox row — that responsibility belongs entirely to the orchestrator.
 
-**`Sandbox`** — the core domain struct: `ID`, `Runtime`, `Status`, `TTL`, `CreatedAt`, `Port`, `PreviewURL`, `Image`.
+## Key types
 
-**`Status`** — `queued | running | succeeded | failed`
+- `Sandbox` — domain struct; `WorkerID *string` is nullable (nil until scheduling step assigns a worker).
+- `Status` — string typedef; use the `Status*` constants, never raw strings.
+- `Repository` — interface; both the postgres impl and any test fake must satisfy it.
+- `PostgresRepository` — pgx/v5 implementation; accepts `pgxdb.DBTX` so it works inside a `pgx.Tx`.
 
-## Service
+## Status state machine
 
-`Service` has two modes depending on how it's constructed:
+```
+pending → scheduling → assigned → starting → running → (user stopped/failed)
+                                                 ↓
+                                          cleanup_pending → cleaned_up
+                                               ↓
+                                            failed
+```
 
-| Constructor | Has Docker? | Use case |
-|-------------|-------------|----------|
-| `NewService(repo)` | No | Orchestrator — DB reads/writes only |
-| `NewRuntimeService(repo, docker)` | Yes | Worker — full container lifecycle |
+- **Job owns**: `pending → scheduling → assigned → starting → running`
+- **Event handler owns**: `starting|running → failed` (die/stop/kill events)
+- **Cleanup job owns**: `cleanup_pending → failed`
 
-### Methods
+## Invariants
 
-- `Create(ctx, CreateRequest) Sandbox` — inserts a `queued` sandbox; generates UUID internally.
-- `GetByID(ctx, id) Sandbox` — returns `ErrNotFound` if missing.
-- `List(ctx) []Sandbox` — ordered by ID descending.
-- `CreateAndStart(ctx, RuntimeCreateRequest) Sandbox` — pulls image if needed, creates container, starts it, then persists the record. Cleans up the container if the DB write fails.
-- `Stop(ctx, containerID)` / `Remove(ctx, containerID)` — stop and optionally remove container + DB record.
+- Status only advances via `UpdateStatus` or `AssignWorker` with an explicit `allowedFrom` set. `rowsAffected=0` means the guard rejected the update — callers must handle this (not an error).
+- `AssignWorker` sets `worker_id` and transitions `scheduling → assigned` atomically in one SQL statement.
+- `ClearWorker` sets `worker_id = NULL` unconditionally. Used by cleanup worker before marking failed.
+- **Worker side must NOT write the sandbox row.** The container exists on the worker; the row lives in the orchestrator DB. The only time the worker touches the sandbox table is never.
 
-## Repository
+## Test patterns
 
-`PostgresRepository` wraps `db.Querier`. Key behavior: `Create()` is **idempotent** — if a record with the same ID already exists (unique constraint violation, code `23505`), it returns the existing row instead of erroring. This handles the case where the orchestrator pre-creates the record before the worker's gRPC call arrives.
+- Use `testutil.SetupPostgres(t, ctx)` for a real Postgres testcontainer.
+- Seed rows with `repo.Create(ctx, sandbox.Sandbox{...})` directly.
+- To test guards: call `UpdateStatus` with an unexpected current status and assert `rowsAffected == 0`.
+- `WithTx(tx)` lets you test transactional behavior: verify visibility inside the tx, then commit and verify persistence.
 
-## Errors
+## Gotchas
 
-| Sentinel | Meaning |
-|----------|---------|
-| `ErrNotFound` | `GetByID` found no row |
-| `ErrDockerClientRequired` | Called `Stop`/`Remove`/`CreateAndStart` without Docker |
-
-Error message constants (`ErrMsgInvalidJSON`, `ErrMsgRuntimeRequired`, etc.) are used by HTTP handlers for consistent response text.
+- `UpdateStatus` returns `(Sandbox, 0, nil)` when the guard rejects (no match). This is NOT an error — callers must check the second return value.
+- `scanSandbox` reads exactly 9 columns in a fixed order. If you add columns to the schema, update the SELECT lists and `scanSandbox` together.
+- `itoa` only handles up to 2-digit numbers (placeholders $3–$12). That's enough for the current max of 9 `allowedFrom` states.

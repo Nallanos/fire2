@@ -10,14 +10,14 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivermigrate"
 
 	"github/nallanos/fire2/internal/app"
-	dbpkg "github/nallanos/fire2/internal/db"
 	"github/nallanos/fire2/internal/packages/orchestrator"
+	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
+	workerpkg "github/nallanos/fire2/internal/packages/worker"
 )
 
 func main() {
@@ -30,11 +30,6 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Wrap pool as *sql.DB so existing sqlc-generated queries keep working unchanged.
-	sqlDB := stdlib.OpenDBFromPool(pool)
-	defer sqlDB.Close()
-
-	// Apply River schema migrations at startup.
 	migrator, err := rivermigrate.New(riverpgxv5.New(pool), nil)
 	if err != nil {
 		log.Fatalf("rivermigrate.New: %v", err)
@@ -43,13 +38,19 @@ func main() {
 		log.Fatalf("river migrate up: %v", err)
 	}
 
-	queries := dbpkg.New(sqlDB)
+	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
+	workerRepo := workerpkg.NewPostgresRepository(pool)
+	eventRepo := orchestrator.NewEventRepository(pool)
 
 	workers := river.NewWorkers()
-	river.AddWorker(workers, orchestrator.NewCreateSandboxWorker(queries))
+	river.AddWorker(workers, orchestrator.NewCreateSandboxWorker(pool, sandboxRepo, workerRepo))
+	river.AddWorker(workers, orchestrator.NewCleanupSandboxWorker(sandboxRepo, workerRepo))
 
 	riverClient, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
-		Queues:      map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 10}},
+		Queues: map[string]river.QueueConfig{
+			river.QueueDefault: {MaxWorkers: 10},
+			"cleanup":          {MaxWorkers: 5},
+		},
 		Workers:     workers,
 		MaxAttempts: 5,
 		RetryPolicy: &orchestrator.StrongRetryPolicy{},
@@ -67,7 +68,7 @@ func main() {
 		_ = riverClient.Stop(stopCtx)
 	}()
 
-	a := app.New(cfg, sqlDB, riverClient)
+	a := app.New(cfg, pool, riverClient)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -85,7 +86,8 @@ func main() {
 	go func() {
 		grpcAddr := ":" + cfg.OrchestratorGRPCPort
 		log.Printf("orchestrator gRPC listening on %s", grpcAddr)
-		grpcErrCh <- orchestrator.ServeEventGRPC(grpcAddr, orchestrator.NewEventGRPCServer(queries))
+		grpcErrCh <- orchestrator.ServeEventGRPC(grpcAddr,
+			orchestrator.NewEventGRPCServer(sandboxRepo, eventRepo))
 	}()
 
 	sigCh := make(chan os.Signal, 1)

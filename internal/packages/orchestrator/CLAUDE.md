@@ -1,50 +1,55 @@
 # orchestrator package
 
-Orchestrates sandbox creation across the worker fleet. Contains the HTTP handlers, gRPC dispatch, scheduler, event ingestion server, and River job definitions.
+## Purpose
 
-## Key files
+Coordinates sandbox lifecycle across the API, River job queue, Docker workers, and the event stream. Owns the create-sandbox HTTP handler, both River job workers (create + cleanup), the gRPC event receiver, and the worker-selection scheduler.
 
-| File | Responsibility |
-|------|---------------|
-| `http.go` | Chi HTTP handlers for `/api/sandboxes` (POST/GET) |
-| `scheduler.go` | `Scheduler` — weighted-random worker selection |
-| `grpc_client.go` | `Client` wrapping `WorkerService` gRPC; `CreateSandboxOnLeastUsedWorker` |
-| `event_grpc.go` | `EventGRPCServer` (OrchestratorService) — ingests events from workers |
-| `jobs.go` | River job: `CreateSandboxArgs`, `CreateSandboxWorker` |
-| `retry_policy.go` | `StrongRetryPolicy` — exponential backoff for River jobs |
+## Key types
 
-## Sandbox creation flow (POST /api/sandboxes)
+- `HTTPHandlers` — HTTP layer; `createSandbox` handler opens a transaction, creates the sandbox row and the River job atomically.
+- `CreateSandboxWorker` — River worker; drives the sandbox state machine one step per attempt.
+- `CleanupSandboxWorker` — River worker; best-effort container removal then marks sandbox failed.
+- `EventGRPCServer` — receives Docker events from workers; guards status transitions.
+- `Scheduler` — weighted random worker selection; `ChooseLeastUsedWorker` returns `ErrNoWorkerCandidates` when no healthy workers exist.
+- `StrongRetryPolicy` — exponential backoff for the default queue (main job).
 
-1. Handler pre-creates a DB record (`status=queued`) with resolved image and port.
-2. Subscribes to River job events (before enqueueing — avoids race).
-3. Enqueues a `CreateSandboxArgs` River job.
-4. Waits up to **45 seconds** on the subscription channel for completion.
-5. `CreateSandboxWorker.Work()` calls `CreateSandboxOnLeastUsedWorker()` then calls `db.UpdateSandboxRunning()` on success.
-6. Handler fetches the updated sandbox from DB and returns 201.
-7. On `JobStateDiscarded` (all retries exhausted) or timeout, marks sandbox `failed` and returns 502.
+## Job structure
 
-## Scheduler
+One River job (`create_sandbox`) drives the sandbox through the state machine. `Work()` reads the current status and executes the NEXT step only:
 
-`ChooseLeastUsedWorker` uses **weighted-random** selection:
-- Weight = `0.7 × CPU_available_ratio + 0.3 × memory_available_ratio`
-- Prefers workers with `status=active`; falls back to any worker if none are active.
-- Falls back to deterministic least-used if all weights are zero.
+| Status at start | Side-effect | Status after |
+|---|---|---|
+| `pending` | none | `scheduling` |
+| `scheduling` | pick worker via gRPC GetWorkerInfo | `assigned` (worker_id set) |
+| `assigned` | gRPC CreateSandbox | `starting` |
+| `starting` | none (event handler may have already advanced) | `running` |
+| `running`/terminal | no-op | unchanged |
 
-## Event ingestion (gRPC :7001)
+On the **final attempt**, `maybeCleanup` transitions the sandbox to `cleanup_pending` and enqueues a `cleanup_sandbox` job, then returns `river.JobCancel(...)` so River does not retry.
 
-`IngestSandboxEvent` receives Docker events from workers and:
-- Persists them to `sandbox_events`.
-- Translates Docker actions to sandbox statuses: `start→running`, `die/stop/kill/oom→failed`.
+## State ownership rule
 
-## Retry policy
+- **Job owns** all transitions from `pending` through `running`.
+- **Events own** transitions `starting|running → failed` (die/stop/kill).
+- **Cleanup job owns** `cleanup_pending → failed`.
 
-`StrongRetryPolicy` — `min(2^attempt seconds, 30s)` backoff. `MaxAttempts=5`. Total worst-case: 60s.
-River fires `EventKindJobFailed` for both retryable and discarded jobs — the handler checks `event.Job.State == JobStateDiscarded` to distinguish final failure.
+Never let two owners race on the same transition. Guards in `UpdateStatus` and `AssignWorker` enforce this at the SQL level.
 
-## Dependencies on db.Querier
+## River queue layout
 
-`CreateSandboxWorker` and `HTTPHandlers` both need `db.Querier` for:
-- `ListWorkers` — select worker pool for scheduling
-- `CreateSandbox` — pre-create record in handler
-- `UpdateSandboxRunning` — set status/port/image after gRPC success
-- `UpdateSandbox` — mark `failed` on timeout or job exhaustion
+- `default` (MaxWorkers: 10) — create_sandbox jobs; uses `StrongRetryPolicy` (MaxAttempts: 5).
+- `cleanup` (MaxWorkers: 5) — cleanup_sandbox jobs; uses River's default retry policy.
+
+## Test patterns
+
+- Use `testutil.SetupRiverClient(t, ctx, pool, addWorkers)` for real River integration.
+- Use `testutil.NewFakeWorkerServer(cpuUsage, memUsage)` for a gRPC worker fake; set `.CreateError` to inject failures.
+- Direct `Work()` calls (with `fakeCreateJob(...)`) test idempotency without River overhead.
+- `waitForStatus` and `waitForTerminal` poll the DB; use a 15s timeout and `FastRetryPolicy` (50ms) to keep tests under a few seconds.
+
+## Gotchas
+
+- `maybeCleanup` uses `log.Printf`. Tests that redirect the global logger (`log.SetOutput`) must restore to `os.Stderr` (not nil) in their defer, otherwise subsequent tests that call `log.Printf` will panic.
+- `river.ClientFromContext[pgx.Tx](ctx)` panics if the context doesn't have a River client — only safe inside `Work()`.
+- `buildCandidates` calls each worker via gRPC with a 5-second timeout. A slow or down worker is silently skipped (not an error); the scheduler sees fewer candidates.
+- The cleanup tx in `maybeCleanup` uses a NEW transaction from `w.pool`, not the River job transaction. This is intentional: the status update and cleanup-job insert must land atomically but independently of the original job's state.

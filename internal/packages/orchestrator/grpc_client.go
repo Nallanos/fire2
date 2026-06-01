@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	workerv1 "github/nallanos/fire2/gen/worker/v1"
-	"github/nallanos/fire2/internal/db"
+	workerpkg "github/nallanos/fire2/internal/packages/worker"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -51,15 +51,19 @@ func (c *Client) GetWorkerInfo(ctx context.Context, req *workerv1.GetWorkerInfoR
 	return c.worker.GetWorkerInfo(ctx, req)
 }
 
-// CreateSandboxOnLeastUsedWorker selects the least-loaded worker, creates the
-// sandbox, and returns the response together with the selected worker's address
-// (needed for cleanup if the caller must destroy the container later).
-func CreateSandboxOnLeastUsedWorker(ctx context.Context, workers []db.Worker, req *workerv1.CreateSandboxRequest) (*workerv1.CreateSandboxResponse, string, error) {
-	scheduler := NewScheduler()
+func CreateSandboxOnLeastUsedWorker(ctx context.Context, workers []workerpkg.Worker, req *workerv1.CreateSandboxRequest) (*workerv1.CreateSandboxResponse, error) {
+	return CreateSandboxOnLeastUsedWorkerWithScheduler(ctx, NewScheduler(), workers, req)
+}
+
+func CreateSandboxOnLeastUsedWorkerWithScheduler(ctx context.Context, scheduler *Scheduler, workers []workerpkg.Worker, req *workerv1.CreateSandboxRequest) (*workerv1.CreateSandboxResponse, error) {
+	if scheduler == nil {
+		scheduler = NewScheduler()
+	}
+
 	candidates := make([]WorkerCandidate, 0, len(workers))
 
 	for _, worker := range workers {
-		address := normalizeWorkerAddress(worker.Address, worker.Port)
+		address := normalizeWorkerAddress(worker.Address, int32(worker.Port))
 		if address == "" {
 			continue
 		}
@@ -83,18 +87,17 @@ func CreateSandboxOnLeastUsedWorker(ctx context.Context, workers []db.Worker, re
 
 	selected, err := scheduler.ChooseLeastUsedWorker(candidates)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 
-	selectedAddress := normalizeWorkerAddress(selected.Worker.Address, selected.Worker.Port)
+	selectedAddress := normalizeWorkerAddress(selected.Worker.Address, int32(selected.Worker.Port))
 	client, err := NewClient(ctx, selectedAddress)
 	if err != nil {
-		return nil, "", fmt.Errorf("connect selected worker %q: %w", selected.Worker.ID, err)
+		return nil, fmt.Errorf("connect selected worker %q: %w", selected.Worker.ID, err)
 	}
 	defer client.Close()
 
-	resp, err := client.CreateSandbox(ctx, req)
-	return resp, selectedAddress, err
+	return client.CreateSandbox(ctx, req)
 }
 
 // DestroySandboxOnWorker stops and removes the container at sandboxID on the

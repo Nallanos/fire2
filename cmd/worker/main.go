@@ -2,13 +2,11 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"log"
 	"os"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github/nallanos/fire2/internal/db"
 	"github/nallanos/fire2/internal/packages/docker"
 	"github/nallanos/fire2/internal/packages/orchestrator"
 	workerpkg "github/nallanos/fire2/internal/packages/worker"
@@ -32,26 +30,34 @@ func main() {
 		orchestratorAddr = "127.0.0.1:7001"
 	}
 
-	sqlDB, err := sql.Open("pgx", databaseURL)
-	if err != nil {
-		log.Fatal(err)
+	workerID := os.Getenv("WORKER_ID")
+	if workerID == "" {
+		workerID, _ = os.Hostname()
 	}
-	defer sqlDB.Close()
+	advertisedHost := os.Getenv("WORKER_ADVERTISED_HOST")
+
+	ctx := context.Background()
+
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		log.Fatalf("pgxpool.New: %v", err)
+	}
+	defer pool.Close()
 
 	dockerClient, err := docker.NewClient()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	queries := db.New(sqlDB)
-	workerService := workerpkg.NewWorkerService(dockerClient, queries)
+	workerRepo := workerpkg.NewPostgresRepository(pool)
+	workerService := workerpkg.NewWorkerService(dockerClient, workerRepo)
+	workerService.SetWorkerIdentity(workerID, advertisedHost)
 	workerGRPCServer := workerpkg.NewWorkerGRPCServer(workerService)
 
-	if eventClient, err := orchestrator.NewEventClient(context.Background(), orchestratorAddr); err != nil {
+	if eventClient, err := orchestrator.NewEventClient(ctx, orchestratorAddr); err != nil {
 		log.Printf("event client init failed: %v", err)
 	} else {
 		defer eventClient.Close()
-		workerID, _ := os.Hostname()
 		reporter := workerpkg.NewEventReporter(dockerClient, eventClient.Client(), workerID)
 		go reporter.Run(context.Background())
 	}

@@ -26,30 +26,18 @@ func NewWorkerGRPCServer(service *WorkerService) *WorkerGRPCServer {
 
 // Implement gRPC server methods
 func (s *WorkerGRPCServer) CreateSandbox(ctx context.Context, req *workerv1.CreateSandboxRequest) (*workerv1.CreateSandboxResponse, error) {
-	sandbox, err := s.service.CreateSandbox(ctx, CreateSandboxInput{
+	if err := s.service.CreateSandbox(ctx, CreateSandboxInput{
 		ID:         req.GetId(),
 		Runtime:    req.GetRuntime(),
 		Image:      req.GetImage(),
 		Port:       req.GetPort(),
 		TTL:        req.GetTtl(),
 		PreviewURL: req.GetPreviewUrl(),
-	})
-	if err != nil {
+	}); err != nil {
 		return nil, err
 	}
 
-	return &workerv1.CreateSandboxResponse{
-		Sandbox: &workerv1.Sandbox{
-			Id:         sandbox.ID,
-			Runtime:    sandbox.Runtime,
-			Status:     sandbox.Status,
-			Ttl:        sandbox.Ttl,
-			CreatedAt:  timestamppb.New(sandbox.CreatedAt),
-			Port:       sandbox.Port,
-			PreviewUrl: sandbox.PreviewUrl,
-			Image:      sandbox.Image,
-		},
-	}, nil
+	return &workerv1.CreateSandboxResponse{}, nil
 }
 
 func (s *WorkerGRPCServer) StopSandbox(ctx context.Context, req *workerv1.StopSandboxRequest) (*workerv1.StopSandboxResponse, error) {

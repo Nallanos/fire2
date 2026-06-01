@@ -1,26 +1,25 @@
 package app
 
 import (
-	"database/sql"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
-	"github/nallanos/fire2/internal/db"
 	"github/nallanos/fire2/internal/packages/orchestrator"
-	sandbox "github/nallanos/fire2/internal/packages/sandbox"
+	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
+	workerpkg "github/nallanos/fire2/internal/packages/worker"
 )
 
 type App struct {
 	cfg    Config
 	router http.Handler
-	db     *db.Queries
 }
 
-func New(cfg Config, sql *sql.DB, riverClient *river.Client[pgx.Tx]) *App {
+func New(cfg Config, pool *pgxpool.Pool, riverClient *river.Client[pgx.Tx]) *App {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
@@ -32,19 +31,15 @@ func New(cfg Config, sql *sql.DB, riverClient *river.Client[pgx.Tx]) *App {
 		_, _ = w.Write([]byte("ok"))
 	})
 
-	db := db.New(sql)
-
-	sandboxRepo := sandbox.NewPostgresRepository(db)
-	sandboxSvc := sandbox.NewService(sandboxRepo)
-	orchestratorHandlers := orchestrator.NewHTTPHandlers(sandboxSvc, db, riverClient,
-		orchestrator.WithWaitTimeout(cfg.SandboxWaitTimeout),
-	)
+	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
+	workerRepo := workerpkg.NewPostgresRepository(pool)
+	orchestratorHandlers := orchestrator.NewHTTPHandlers(pool, sandboxRepo, workerRepo, riverClient)
 
 	r.Route("/api", func(r chi.Router) {
 		r.Mount("/sandboxes", orchestratorHandlers.Routes())
 	})
 
-	return &App{cfg: cfg, router: r, db: db}
+	return &App{cfg: cfg, router: r}
 }
 
 func (a *App) Router() http.Handler {

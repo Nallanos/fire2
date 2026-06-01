@@ -1,20 +1,38 @@
 package orchestrator
 
 import (
+	"math"
+	"math/rand"
 	"time"
 
 	"github.com/riverqueue/river/rivertype"
 )
 
-// StrongRetryPolicy uses exponential backoff: min(2^attempt seconds, 30s).
-// With MaxAttempts=5: 2+4+8+16+30 = 60s worst-case total — fits the 45s HTTP window.
+const (
+	retryBaseDelay = 60 * time.Second
+	retryMaxDelay  = 10 * time.Minute
+)
+
+// StrongRetryPolicy is an exponential backoff with jitter: min(60s * 2^attempt, 10min).
 type StrongRetryPolicy struct{}
 
 func (p *StrongRetryPolicy) NextRetry(job *rivertype.JobRow) time.Time {
-	attempt := len(job.Errors) + 1
-	backoff := time.Duration(1<<attempt) * time.Second
-	if backoff > 30*time.Second {
-		backoff = 30 * time.Second
+	attempt := job.Attempt
+	if attempt < 1 {
+		attempt = 1
 	}
-	return time.Now().UTC().Add(backoff)
+
+	delay := float64(retryBaseDelay) * math.Pow(2, float64(attempt-1))
+	if delay > float64(retryMaxDelay) {
+		delay = float64(retryMaxDelay)
+	}
+
+	// ±25% jitter
+	jitter := (rand.Float64()*0.5 - 0.25) * delay
+	total := time.Duration(delay + jitter)
+	if total < time.Second {
+		total = time.Second
+	}
+
+	return time.Now().Add(total)
 }

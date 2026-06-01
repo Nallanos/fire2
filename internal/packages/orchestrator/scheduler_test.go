@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	workerv1 "github/nallanos/fire2/gen/worker/v1"
-	"github/nallanos/fire2/internal/db"
+	workerpkg "github/nallanos/fire2/internal/packages/worker"
 )
 
 func TestSchedulerWeightedRandomDistribution(t *testing.T) {
@@ -78,9 +78,9 @@ func TestSchedulerEmptyCandidates(t *testing.T) {
 
 func workerCandidate(id string, cpuUsage, cpuBudget, memUsage, memBudget int32) WorkerCandidate {
 	return WorkerCandidate{
-		Worker: db.Worker{
+		Worker: workerpkg.Worker{
 			ID:     id,
-			Status: "active",
+			Status: workerpkg.WorkerStatusActive,
 		},
 		Info: &workerv1.GetWorkerInfoResponse{
 			Id:        id,

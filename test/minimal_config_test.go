@@ -2,14 +2,15 @@ package tests
 
 import (
 	"context"
+	"math/rand"
 	"net"
 	"strconv"
 	"testing"
 	"time"
 
 	workerv1 "github/nallanos/fire2/gen/worker/v1"
-	"github/nallanos/fire2/internal/db"
 	orchestrator "github/nallanos/fire2/internal/packages/orchestrator"
+	workerpkg "github/nallanos/fire2/internal/packages/worker"
 
 	"google.golang.org/grpc"
 )
@@ -35,20 +36,9 @@ func (f *fakeWorkerServer) GetWorkerInfo(context.Context, *workerv1.GetWorkerInf
 	}, nil
 }
 
-func (f *fakeWorkerServer) CreateSandbox(_ context.Context, req *workerv1.CreateSandboxRequest) (*workerv1.CreateSandboxResponse, error) {
+func (f *fakeWorkerServer) CreateSandbox(_ context.Context, _ *workerv1.CreateSandboxRequest) (*workerv1.CreateSandboxResponse, error) {
 	f.createRuns++
-
-	return &workerv1.CreateSandboxResponse{
-		Sandbox: &workerv1.Sandbox{
-			Id:         f.id + "-sandbox",
-			Runtime:    req.GetRuntime(),
-			Status:     "running",
-			Ttl:        req.GetTtl(),
-			Port:       req.GetPort(),
-			PreviewUrl: req.GetPreviewUrl(),
-			Image:      req.GetImage(),
-		},
-	}, nil
+	return &workerv1.CreateSandboxResponse{}, nil
 }
 
 func startFakeWorkerServer(t *testing.T, server *fakeWorkerServer) (string, int32, func()) {
@@ -94,38 +84,35 @@ func TestCreateSandboxOnLeastUsedWorker_MinimalConfig(t *testing.T) {
 	freeHost, freePort, cleanupFree := startFakeWorkerServer(t, free)
 	defer cleanupFree()
 
-	workers := []db.Worker{
-		{ID: "busy", Address: busyHost, Port: busyPort, Status: "active"},
-		{ID: "free", Address: freeHost, Port: freePort, Status: "active"},
+	workers := []workerpkg.Worker{
+		{ID: "busy", Address: busyHost, Port: int(busyPort), Status: workerpkg.WorkerStatusActive},
+		{ID: "free", Address: freeHost, Port: int(freePort), Status: workerpkg.WorkerStatusActive},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	resp, _, err := orchestrator.CreateSandboxOnLeastUsedWorker(ctx, workers, &workerv1.CreateSandboxRequest{
-		Id:         "sandbox-test",
-		Runtime:    "node",
-		Image:      "node:20-alpine",
-		Port:       3000,
-		Ttl:        60,
-		PreviewUrl: "http://localhost:3000",
-	})
-	if err != nil {
-		t.Fatalf("create sandbox on least-used worker failed: %v", err)
+	scheduler := orchestrator.NewSchedulerWithRand(rand.New(rand.NewSource(42)))
+
+	// The scheduler is weighted-random: free (cpu/mem=20%) should win significantly
+	// more often than busy (cpu/mem=90%). Run 20 rounds and assert free > busy.
+	const rounds = 20
+	for i := 0; i < rounds; i++ {
+		id := "sandbox-" + strconv.Itoa(i)
+		_, err := orchestrator.CreateSandboxOnLeastUsedWorkerWithScheduler(ctx, scheduler, workers, &workerv1.CreateSandboxRequest{
+			Id:      id,
+			Runtime: "node",
+			Image:   "node:20-alpine",
+			Port:    3000,
+			Ttl:     60,
+		})
+		if err != nil {
+			t.Fatalf("round %d: create sandbox on least-used worker failed: %v", i, err)
+		}
 	}
 
-	if resp.GetSandbox() == nil {
-		t.Fatalf("expected sandbox in response")
-	}
-
-	if got, want := resp.GetSandbox().GetId(), "worker-free-sandbox"; got != want {
-		t.Fatalf("unexpected selected worker: got sandbox id %q, want %q", got, want)
-	}
-
-	if free.createRuns != 1 {
-		t.Fatalf("expected free worker to receive one create call, got %d", free.createRuns)
-	}
-	if busy.createRuns != 0 {
-		t.Fatalf("expected busy worker to receive zero create call, got %d", busy.createRuns)
+	if free.createRuns <= busy.createRuns {
+		t.Fatalf("expected free worker to receive more calls than busy: free=%d busy=%d",
+			free.createRuns, busy.createRuns)
 	}
 }

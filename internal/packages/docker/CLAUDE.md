@@ -1,31 +1,36 @@
 # docker package
 
-Thin wrapper around the Docker SDK. Exposes a narrow `ClientInterface` so the rest of the codebase stays decoupled from Docker implementation details and can be mocked in tests.
+## Purpose
 
-## Interface
+Thin abstraction over the Docker SDK. `ClientInterface` lets tests inject a fake; the real `Client` wraps `client.Client` from `github.com/docker/docker/client`.
 
-```go
-type ClientInterface interface {
-    PullImage(ctx, img) error
-    CreateContainer(ctx, img, hostPort, id) (containerID string, error)
-    StartContainer(ctx, containerID) error
-    StopContainer(ctx, containerID) error
-    RemoveContainer(ctx, containerID) error
-    InspectImage(ctx, img) error
-    Events(ctx) (<-chan EventMessage, <-chan error)
-}
-```
+## Key types
 
-## Container conventions
+- `ClientInterface` — interface that all code should depend on (never the concrete `*Client`).
+- `Client` — real Docker SDK wrapper; use `NewClient()` to create.
 
-- Every container runs `sleep infinity` as its command (containers are kept-alive shells, not services).
-- Port `3000/tcp` is exposed internally and bound to `hostPort` on `0.0.0.0`.
-- Labels `id` and `sandbox_id` are set to the sandbox UUID — used by `EventReporter` to correlate Docker events.
+## Key methods
 
-## Events
+- `CreateContainer(ctx, id, image, ...)` — creates and returns a container ID. Does NOT start it.
+- `StartContainer(ctx, containerID)` — starts an already-created container.
+- `FindContainerBySandboxID(ctx, sandboxID)` — returns the container ID if a container named after the sandbox exists, empty string otherwise. Used for idempotency in WorkerService.
+- `Events(ctx)` — returns a channel of Docker events and a channel of errors. Used by the event relay.
 
-`Events(ctx)` filters for `type=container` events only. Returns two channels: one for `EventMessage` values and one for errors. The caller must cancel the context to stop streaming; the `EventMessage` channel is closed on stream end.
+## Container naming convention
 
-## Construction
+Containers are named after their sandbox ID (e.g. `sbx-abc123`). `FindContainerBySandboxID` uses this convention to check existence before creating.
 
-`NewClient()` reads Docker connection config from the environment (`DOCKER_HOST`, `DOCKER_TLS_VERIFY`, etc.) via `client.FromEnv` and auto-negotiates the API version.
+## Test patterns
+
+Use `testutil.NewFakeDockerClient()` in tests. It implements `ClientInterface` with an in-memory map. Key behaviors:
+
+- `CreateContainer` stores `"fake-" + sandboxID` keyed by sandbox ID.
+- `FindContainerBySandboxID` looks up by sandbox ID.
+- `InspectImage` always returns nil (image "present") to skip pull.
+- `Events` returns closed channels (no events in tests).
+- `ContainerExists(sandboxID)`, `CreateCallCount(sandboxID)`, `RunningCount()` for test assertions.
+
+## Gotchas
+
+- `CreateContainer` errors (like "name conflict") are not automatically retried. Callers must check for existing containers via `FindContainerBySandboxID` before creating.
+- `Events` channel is unbuffered; consumers must read promptly or use a goroutine. The real Docker client will block if the channel fills.
