@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net"
 	"strings"
@@ -18,16 +19,18 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
+	workerpkg "github/nallanos/fire2/internal/packages/worker"
 )
 
 type EventGRPCServer struct {
 	orchestratorv1.UnimplementedOrchestratorServiceServer
 	sandboxRepo sandboxpkg.Repository
 	eventRepo   EventRepository
+	workerRepo  workerpkg.Repository
 }
 
-func NewEventGRPCServer(sandboxRepo sandboxpkg.Repository, eventRepo EventRepository) *EventGRPCServer {
-	return &EventGRPCServer{sandboxRepo: sandboxRepo, eventRepo: eventRepo}
+func NewEventGRPCServer(sandboxRepo sandboxpkg.Repository, eventRepo EventRepository, workerRepo workerpkg.Repository) *EventGRPCServer {
+	return &EventGRPCServer{sandboxRepo: sandboxRepo, eventRepo: eventRepo, workerRepo: workerRepo}
 }
 
 // IngestSandboxEvent stores a sandbox event and updates sandbox status.
@@ -92,6 +95,39 @@ func (s *EventGRPCServer) IngestSandboxEvent(ctx context.Context, req *orchestra
 	}
 
 	s.applyStatusFromAction(ctx, sandboxID, action)
+
+	return &emptypb.Empty{}, nil
+}
+
+// ReportWorkerHeartbeat upserts the worker row with fresh metrics and a current
+// heartbeat timestamp. The first heartbeat from a new worker acts as self-registration.
+func (s *EventGRPCServer) ReportWorkerHeartbeat(ctx context.Context, req *orchestratorv1.WorkerHeartbeat) (*emptypb.Empty, error) {
+	if req == nil || strings.TrimSpace(req.GetWorkerId()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "worker_id is required")
+	}
+
+	w := workerpkg.NewWorkerFromHeartbeat(workerpkg.HeartbeatParams{
+		ID:        req.GetWorkerId(),
+		Status:    workerpkg.WorkerStatus(req.GetStatus()),
+		Address:   req.GetAddress(),
+		Port:      int(req.GetPort()),
+		Capacity:  int(req.GetCapacity()),
+		CpuBudget: int(req.GetCpuBudget()),
+		MemBudget: int(req.GetMemBudget()),
+		CpuUsage:  int(req.GetCpuUsage()),
+		MemUsage:  int(req.GetMemUsage()),
+	})
+
+	_, err := s.workerRepo.Update(ctx, w)
+	if err != nil {
+		if errors.Is(err, workerpkg.ErrNotFound) {
+			if _, createErr := s.workerRepo.Create(ctx, w); createErr != nil {
+				return nil, status.Errorf(codes.Internal, "register worker: %v", createErr)
+			}
+			return &emptypb.Empty{}, nil
+		}
+		return nil, status.Errorf(codes.Internal, "update worker: %v", err)
+	}
 
 	return &emptypb.Empty{}, nil
 }

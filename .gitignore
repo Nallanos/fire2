@@ -11,4 +11,5 @@
 
 # Environment 
 .env
-worker
+/worker
+/dist/

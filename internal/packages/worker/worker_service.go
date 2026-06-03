@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	orchestratorv1 "github/nallanos/fire2/gen/orchestrator/v1"
+
 	"github/nallanos/fire2/internal/packages/docker"
 	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
 )
@@ -21,8 +23,8 @@ const defaultHeartbeatInterval = 5 * time.Second
 const heartbeatRequestTimeout = 3 * time.Second
 
 type WorkerService struct {
-	repo       Repository
-	sandboxSvc *sandboxpkg.Service
+	orchestratorClient orchestratorv1.OrchestratorServiceClient
+	sandboxSvc         *sandboxpkg.Service
 
 	mu               sync.Mutex
 	worker           Worker
@@ -38,11 +40,11 @@ type CreateSandboxInput struct {
 	PreviewURL string
 }
 
-func NewWorkerService(dockerClient docker.ClientInterface, repo Repository) *WorkerService {
+func NewWorkerService(dockerClient docker.ClientInterface, orchestratorClient orchestratorv1.OrchestratorServiceClient) *WorkerService {
 	return &WorkerService{
-		repo:             repo,
-		sandboxSvc:       sandboxpkg.NewRuntimeService(nil, dockerClient),
-		runningSandboxes: make(map[string]struct{}),
+		orchestratorClient: orchestratorClient,
+		sandboxSvc:         sandboxpkg.NewRuntimeService(nil, dockerClient),
+		runningSandboxes:   make(map[string]struct{}),
 	}
 }
 
@@ -183,15 +185,18 @@ func (w *WorkerService) UpdateWorker(ctx context.Context) (string, error) {
 	snap := w.worker
 	w.mu.Unlock()
 
-	_, err = w.repo.Update(ctx, snap)
+	_, err = w.orchestratorClient.ReportWorkerHeartbeat(ctx, &orchestratorv1.WorkerHeartbeat{
+		WorkerId:  snap.ID,
+		Status:    string(snap.Status),
+		Address:   snap.Address,
+		Port:      int32(snap.Port),
+		Capacity:  int32(snap.Capacity),
+		CpuBudget: int32(snap.Budget.Cpu_budget),
+		MemBudget: int32(snap.Budget.Mem_budget),
+		CpuUsage:  int32(snap.cpu_usage),
+		MemUsage:  int32(snap.mem_usage),
+	})
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			_, createErr := w.repo.Create(ctx, snap)
-			if createErr != nil {
-				return "", createErr
-			}
-			return snap.ID, nil
-		}
 		return "", err
 	}
 

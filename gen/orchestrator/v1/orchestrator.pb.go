@@ -23,6 +23,114 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type WorkerHeartbeat struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorkerId      string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	Address       string                 `protobuf:"bytes,3,opt,name=address,proto3" json:"address,omitempty"`
+	Port          int32                  `protobuf:"varint,4,opt,name=port,proto3" json:"port,omitempty"`
+	Capacity      int32                  `protobuf:"varint,5,opt,name=capacity,proto3" json:"capacity,omitempty"`
+	CpuBudget     int32                  `protobuf:"varint,6,opt,name=cpu_budget,json=cpuBudget,proto3" json:"cpu_budget,omitempty"`
+	MemBudget     int32                  `protobuf:"varint,7,opt,name=mem_budget,json=memBudget,proto3" json:"mem_budget,omitempty"`
+	CpuUsage      int32                  `protobuf:"varint,8,opt,name=cpu_usage,json=cpuUsage,proto3" json:"cpu_usage,omitempty"`
+	MemUsage      int32                  `protobuf:"varint,9,opt,name=mem_usage,json=memUsage,proto3" json:"mem_usage,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkerHeartbeat) Reset() {
+	*x = WorkerHeartbeat{}
+	mi := &file_orchestrator_v1_orchestrator_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkerHeartbeat) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkerHeartbeat) ProtoMessage() {}
+
+func (x *WorkerHeartbeat) ProtoReflect() protoreflect.Message {
+	mi := &file_orchestrator_v1_orchestrator_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkerHeartbeat.ProtoReflect.Descriptor instead.
+func (*WorkerHeartbeat) Descriptor() ([]byte, []int) {
+	return file_orchestrator_v1_orchestrator_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *WorkerHeartbeat) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *WorkerHeartbeat) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *WorkerHeartbeat) GetAddress() string {
+	if x != nil {
+		return x.Address
+	}
+	return ""
+}
+
+func (x *WorkerHeartbeat) GetPort() int32 {
+	if x != nil {
+		return x.Port
+	}
+	return 0
+}
+
+func (x *WorkerHeartbeat) GetCapacity() int32 {
+	if x != nil {
+		return x.Capacity
+	}
+	return 0
+}
+
+func (x *WorkerHeartbeat) GetCpuBudget() int32 {
+	if x != nil {
+		return x.CpuBudget
+	}
+	return 0
+}
+
+func (x *WorkerHeartbeat) GetMemBudget() int32 {
+	if x != nil {
+		return x.MemBudget
+	}
+	return 0
+}
+
+func (x *WorkerHeartbeat) GetCpuUsage() int32 {
+	if x != nil {
+		return x.CpuUsage
+	}
+	return 0
+}
+
+func (x *WorkerHeartbeat) GetMemUsage() int32 {
+	if x != nil {
+		return x.MemUsage
+	}
+	return 0
+}
+
 type SandboxEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -40,7 +148,7 @@ type SandboxEvent struct {
 
 func (x *SandboxEvent) Reset() {
 	*x = SandboxEvent{}
-	mi := &file_orchestrator_v1_orchestrator_proto_msgTypes[0]
+	mi := &file_orchestrator_v1_orchestrator_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -52,7 +160,7 @@ func (x *SandboxEvent) String() string {
 func (*SandboxEvent) ProtoMessage() {}
 
 func (x *SandboxEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_orchestrator_v1_orchestrator_proto_msgTypes[0]
+	mi := &file_orchestrator_v1_orchestrator_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -65,7 +173,7 @@ func (x *SandboxEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SandboxEvent.ProtoReflect.Descriptor instead.
 func (*SandboxEvent) Descriptor() ([]byte, []int) {
-	return file_orchestrator_v1_orchestrator_proto_rawDescGZIP(), []int{0}
+	return file_orchestrator_v1_orchestrator_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *SandboxEvent) GetId() string {
@@ -135,7 +243,19 @@ var File_orchestrator_v1_orchestrator_proto protoreflect.FileDescriptor
 
 const file_orchestrator_v1_orchestrator_proto_rawDesc = "" +
 	"\n" +
-	"\"orchestrator/v1/orchestrator.proto\x12\x0forchestrator.v1\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x9a\x03\n" +
+	"\"orchestrator/v1/orchestrator.proto\x12\x0forchestrator.v1\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x88\x02\n" +
+	"\x0fWorkerHeartbeat\x12\x1b\n" +
+	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12\x18\n" +
+	"\aaddress\x18\x03 \x01(\tR\aaddress\x12\x12\n" +
+	"\x04port\x18\x04 \x01(\x05R\x04port\x12\x1a\n" +
+	"\bcapacity\x18\x05 \x01(\x05R\bcapacity\x12\x1d\n" +
+	"\n" +
+	"cpu_budget\x18\x06 \x01(\x05R\tcpuBudget\x12\x1d\n" +
+	"\n" +
+	"mem_budget\x18\a \x01(\x05R\tmemBudget\x12\x1b\n" +
+	"\tcpu_usage\x18\b \x01(\x05R\bcpuUsage\x12\x1b\n" +
+	"\tmem_usage\x18\t \x01(\x05R\bmemUsage\"\x9a\x03\n" +
 	"\fSandboxEvent\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +
@@ -153,9 +273,10 @@ const file_orchestrator_v1_orchestrator_proto_rawDesc = "" +
 	"occurredAt\x1a=\n" +
 	"\x0fAttributesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x012b\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x012\xb5\x01\n" +
 	"\x13OrchestratorService\x12K\n" +
-	"\x12IngestSandboxEvent\x12\x1d.orchestrator.v1.SandboxEvent\x1a\x16.google.protobuf.EmptyB8Z6github/nallanos/fire2/gen/orchestrator/v1;orchestratorb\x06proto3"
+	"\x12IngestSandboxEvent\x12\x1d.orchestrator.v1.SandboxEvent\x1a\x16.google.protobuf.Empty\x12Q\n" +
+	"\x15ReportWorkerHeartbeat\x12 .orchestrator.v1.WorkerHeartbeat\x1a\x16.google.protobuf.EmptyB8Z6github/nallanos/fire2/gen/orchestrator/v1;orchestratorb\x06proto3"
 
 var (
 	file_orchestrator_v1_orchestrator_proto_rawDescOnce sync.Once
@@ -169,20 +290,23 @@ func file_orchestrator_v1_orchestrator_proto_rawDescGZIP() []byte {
 	return file_orchestrator_v1_orchestrator_proto_rawDescData
 }
 
-var file_orchestrator_v1_orchestrator_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_orchestrator_v1_orchestrator_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_orchestrator_v1_orchestrator_proto_goTypes = []any{
-	(*SandboxEvent)(nil),          // 0: orchestrator.v1.SandboxEvent
-	nil,                           // 1: orchestrator.v1.SandboxEvent.AttributesEntry
-	(*timestamppb.Timestamp)(nil), // 2: google.protobuf.Timestamp
-	(*emptypb.Empty)(nil),         // 3: google.protobuf.Empty
+	(*WorkerHeartbeat)(nil),       // 0: orchestrator.v1.WorkerHeartbeat
+	(*SandboxEvent)(nil),          // 1: orchestrator.v1.SandboxEvent
+	nil,                           // 2: orchestrator.v1.SandboxEvent.AttributesEntry
+	(*timestamppb.Timestamp)(nil), // 3: google.protobuf.Timestamp
+	(*emptypb.Empty)(nil),         // 4: google.protobuf.Empty
 }
 var file_orchestrator_v1_orchestrator_proto_depIdxs = []int32{
-	1, // 0: orchestrator.v1.SandboxEvent.attributes:type_name -> orchestrator.v1.SandboxEvent.AttributesEntry
-	2, // 1: orchestrator.v1.SandboxEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	0, // 2: orchestrator.v1.OrchestratorService.IngestSandboxEvent:input_type -> orchestrator.v1.SandboxEvent
-	3, // 3: orchestrator.v1.OrchestratorService.IngestSandboxEvent:output_type -> google.protobuf.Empty
-	3, // [3:4] is the sub-list for method output_type
-	2, // [2:3] is the sub-list for method input_type
+	2, // 0: orchestrator.v1.SandboxEvent.attributes:type_name -> orchestrator.v1.SandboxEvent.AttributesEntry
+	3, // 1: orchestrator.v1.SandboxEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	1, // 2: orchestrator.v1.OrchestratorService.IngestSandboxEvent:input_type -> orchestrator.v1.SandboxEvent
+	0, // 3: orchestrator.v1.OrchestratorService.ReportWorkerHeartbeat:input_type -> orchestrator.v1.WorkerHeartbeat
+	4, // 4: orchestrator.v1.OrchestratorService.IngestSandboxEvent:output_type -> google.protobuf.Empty
+	4, // 5: orchestrator.v1.OrchestratorService.ReportWorkerHeartbeat:output_type -> google.protobuf.Empty
+	4, // [4:6] is the sub-list for method output_type
+	2, // [2:4] is the sub-list for method input_type
 	2, // [2:2] is the sub-list for extension type_name
 	2, // [2:2] is the sub-list for extension extendee
 	0, // [0:2] is the sub-list for field type_name
@@ -199,7 +323,7 @@ func file_orchestrator_v1_orchestrator_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchestrator_v1_orchestrator_proto_rawDesc), len(file_orchestrator_v1_orchestrator_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
