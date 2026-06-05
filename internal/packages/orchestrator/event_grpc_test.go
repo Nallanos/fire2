@@ -13,6 +13,7 @@ import (
 
 	orchestratorv1 "github/nallanos/fire2/gen/orchestrator/v1"
 	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
+	workerpkg "github/nallanos/fire2/internal/packages/worker"
 	"github/nallanos/fire2/internal/testutil"
 )
 
@@ -69,7 +70,7 @@ func TestEventGuard_DieWhilePending(t *testing.T) {
 	log.SetOutput(&buf)
 	defer log.SetOutput(os.Stderr)
 
-	srv := NewEventGRPCServer(sandboxRepo, eventRepo)
+	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerpkg.NewPostgresRepository(pool))
 	ingestEvent(t, ctx, srv, "sbx-h1", "die")
 
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h1") != sandboxpkg.StatusPending {
@@ -93,7 +94,7 @@ func TestEventGuard_DieWhileScheduling(t *testing.T) {
 	log.SetOutput(&buf)
 	defer log.SetOutput(os.Stderr)
 
-	srv := NewEventGRPCServer(sandboxRepo, eventRepo)
+	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerpkg.NewPostgresRepository(pool))
 	ingestEvent(t, ctx, srv, "sbx-h2", "die")
 
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h2") != sandboxpkg.StatusScheduling {
@@ -117,7 +118,7 @@ func TestEventGuard_DieWhileAssigned(t *testing.T) {
 	log.SetOutput(&buf)
 	defer log.SetOutput(os.Stderr)
 
-	srv := NewEventGRPCServer(sandboxRepo, eventRepo)
+	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerpkg.NewPostgresRepository(pool))
 	ingestEvent(t, ctx, srv, "sbx-h3", "die")
 
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h3") != sandboxpkg.StatusAssigned {
@@ -141,7 +142,7 @@ func TestEventGuard_StartWhileStarting(t *testing.T) {
 	log.SetOutput(&buf)
 	defer log.SetOutput(os.Stderr)
 
-	srv := NewEventGRPCServer(sandboxRepo, eventRepo)
+	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerpkg.NewPostgresRepository(pool))
 	ingestEvent(t, ctx, srv, "sbx-h4", "start")
 
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h4") != sandboxpkg.StatusRunning {
@@ -161,7 +162,7 @@ func TestEventGuard_DieWhileRunning(t *testing.T) {
 
 	seedSandbox(t, ctx, sandboxRepo, "sbx-h5", sandboxpkg.StatusRunning)
 
-	srv := NewEventGRPCServer(sandboxRepo, eventRepo)
+	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerpkg.NewPostgresRepository(pool))
 	ingestEvent(t, ctx, srv, "sbx-h5", "die")
 
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h5") != sandboxpkg.StatusFailed {
@@ -182,7 +183,7 @@ func TestEventGuard_DieWhileFailed(t *testing.T) {
 	log.SetOutput(&buf)
 	defer log.SetOutput(os.Stderr)
 
-	srv := NewEventGRPCServer(sandboxRepo, eventRepo)
+	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerpkg.NewPostgresRepository(pool))
 	ingestEvent(t, ctx, srv, "sbx-h6", "die")
 
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h6") != sandboxpkg.StatusFailed {
@@ -208,7 +209,7 @@ func TestEventGuard_OutOfOrder_DieBeforeStart(t *testing.T) {
 	log.SetOutput(&buf)
 	defer log.SetOutput(os.Stderr)
 
-	srv := NewEventGRPCServer(sandboxRepo, eventRepo)
+	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerpkg.NewPostgresRepository(pool))
 
 	// die arrives while pending → rejected
 	ingestEvent(t, ctx, srv, "sbx-h7", "die")

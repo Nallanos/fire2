@@ -18,7 +18,6 @@ import (
 	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
 )
 
-const defaultWorkerPort = 50051
 const defaultHeartbeatInterval = 5 * time.Second
 const heartbeatRequestTimeout = 3 * time.Second
 
@@ -60,6 +59,16 @@ func (w *WorkerService) SetWorkerIdentity(id, address string) {
 	if address != "" {
 		w.worker.Address = address
 	}
+}
+
+// SetListenPort records the actual TCP port the worker's gRPC server bound to.
+// With ephemeral binding (:0) the OS assigns the port at listen time, so this
+// must be called once after the listener is created and before the heartbeat
+// loop starts. The reported port flows to the orchestrator via the heartbeat.
+func (w *WorkerService) SetListenPort(port int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.worker.Port = port
 }
 
 // CreateSandbox starts a container for the sandbox. It is idempotent: if a container
@@ -173,9 +182,6 @@ func (w *WorkerService) UpdateWorker(ctx context.Context) (string, error) {
 	}
 	if w.worker.Address == "" {
 		w.worker.Address = address
-	}
-	if w.worker.Port <= 0 {
-		w.worker.Port = readWorkerPort()
 	}
 	w.worker.Capacity = w.worker.Budget.Cpu_budget
 	w.worker.cpu_usage = cpuUsage
@@ -298,14 +304,3 @@ func readMemUsageMB() int {
 	return used / 1024
 }
 
-func readWorkerPort() int {
-	raw := strings.TrimSpace(os.Getenv("WORKER_PORT"))
-	if raw == "" {
-		return defaultWorkerPort
-	}
-	port, err := strconv.Atoi(raw)
-	if err != nil || port <= 0 {
-		return defaultWorkerPort
-	}
-	return port
-}

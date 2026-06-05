@@ -131,3 +131,37 @@ func TestWorkerService_UpdateWorker_SendsHeartbeat(t *testing.T) {
 		t.Fatalf("heartbeat worker_id mismatch: %q", fake.heartbeats[0].GetWorkerId())
 	}
 }
+
+// E6: SetListenPort makes UpdateWorker report the OS-assigned port in the heartbeat.
+func TestWorkerService_UpdateWorker_ReportsListenPort(t *testing.T) {
+	docker := testutil.NewFakeDockerClient()
+	fake := &fakeOrchestratorClient{}
+	svc := NewWorkerService(docker, fake)
+	svc.worker.ID = "worker-e6"
+	svc.worker.Capacity = 4
+	svc.SetListenPort(54321)
+
+	if _, err := svc.UpdateWorker(context.Background()); err != nil {
+		t.Fatalf("UpdateWorker: %v", err)
+	}
+	if got := fake.heartbeats[0].GetPort(); got != 54321 {
+		t.Fatalf("expected heartbeat port 54321, got %d", got)
+	}
+}
+
+// E7: with no port reported yet, the heartbeat carries 0 so the orchestrator
+// stores NULL and the scheduler skips the worker until it registers a port.
+func TestWorkerService_UpdateWorker_ZeroPortWhenUnset(t *testing.T) {
+	docker := testutil.NewFakeDockerClient()
+	fake := &fakeOrchestratorClient{}
+	svc := NewWorkerService(docker, fake)
+	svc.worker.ID = "worker-e7"
+	svc.worker.Capacity = 4
+
+	if _, err := svc.UpdateWorker(context.Background()); err != nil {
+		t.Fatalf("UpdateWorker: %v", err)
+	}
+	if got := fake.heartbeats[0].GetPort(); got != 0 {
+		t.Fatalf("expected heartbeat port 0, got %d", got)
+	}
+}

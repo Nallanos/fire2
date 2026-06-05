@@ -30,11 +30,22 @@ func NewPostgresRepository(db pgxdb.DBTX) *PostgresRepository {
 
 const workerColumns = `id, status, address, capacity, port, cpu_budget, mem_budget, cpu_usage, mem_usage, last_heartbeat`
 
+// nullablePort maps the in-memory port (0 = not yet reported) to a value the
+// driver writes as SQL NULL, keeping the hardcoded-default-port logic out of
+// the database.
+func nullablePort(port int) *int {
+	if port <= 0 {
+		return nil
+	}
+	return &port
+}
+
 func scanWorker(row pgx.Row) (Worker, error) {
 	var w Worker
 	var cpuUsage, memUsage int
+	var port *int
 	err := row.Scan(
-		&w.ID, &w.Status, &w.Address, &w.Capacity, &w.Port,
+		&w.ID, &w.Status, &w.Address, &w.Capacity, &port,
 		&w.Budget.Cpu_budget, &w.Budget.Mem_budget,
 		&cpuUsage, &memUsage,
 		&w.Last_heartbeat,
@@ -44,6 +55,9 @@ func scanWorker(row pgx.Row) (Worker, error) {
 			return Worker{}, ErrNotFound
 		}
 		return Worker{}, err
+	}
+	if port != nil {
+		w.Port = *port
 	}
 	w.cpu_usage = cpuUsage
 	w.mem_usage = memUsage
@@ -60,7 +74,7 @@ func (r *PostgresRepository) Create(ctx context.Context, w Worker) (Worker, erro
 		w.Last_heartbeat = time.Now().UTC()
 	}
 	row := r.db.QueryRow(ctx, q,
-		w.ID, string(w.Status), w.Address, w.Capacity, w.Port,
+		w.ID, string(w.Status), w.Address, w.Capacity, nullablePort(w.Port),
 		w.Budget.Cpu_budget, w.Budget.Mem_budget,
 		w.cpu_usage, w.mem_usage, w.Last_heartbeat,
 	)
@@ -84,7 +98,7 @@ func (r *PostgresRepository) Update(ctx context.Context, w Worker) (Worker, erro
 		w.Last_heartbeat = time.Now().UTC()
 	}
 	row := r.db.QueryRow(ctx, q,
-		w.ID, string(w.Status), w.Address, w.Capacity, w.Port,
+		w.ID, string(w.Status), w.Address, w.Capacity, nullablePort(w.Port),
 		w.Budget.Cpu_budget, w.Budget.Mem_budget,
 		w.cpu_usage, w.mem_usage, w.Last_heartbeat,
 	)
@@ -110,13 +124,17 @@ func (r *PostgresRepository) List(ctx context.Context) ([]Worker, error) {
 	for rows.Next() {
 		var w Worker
 		var cpuUsage, memUsage int
+		var port *int
 		if err := rows.Scan(
-			&w.ID, &w.Status, &w.Address, &w.Capacity, &w.Port,
+			&w.ID, &w.Status, &w.Address, &w.Capacity, &port,
 			&w.Budget.Cpu_budget, &w.Budget.Mem_budget,
 			&cpuUsage, &memUsage,
 			&w.Last_heartbeat,
 		); err != nil {
 			return nil, err
+		}
+		if port != nil {
+			w.Port = *port
 		}
 		w.cpu_usage = cpuUsage
 		w.mem_usage = memUsage

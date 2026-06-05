@@ -10,12 +10,13 @@ import (
 	workerpkg "github/nallanos/fire2/internal/packages/worker"
 )
 
-const defaultWorkerPort = "50051"
-
 func main() {
+	// WORKER_PORT unset or "0" binds an OS-assigned ephemeral port; the worker
+	// discovers the real port from the listener and reports it via heartbeat.
+	// A non-zero value pins a specific port.
 	workerPort := os.Getenv("WORKER_PORT")
 	if workerPort == "" {
-		workerPort = defaultWorkerPort
+		workerPort = "0"
 	}
 
 	orchestratorAddr := os.Getenv("ORCHESTRATOR_GRPC_ADDR")
@@ -49,7 +50,6 @@ func main() {
 	reporter := workerpkg.NewEventReporter(dockerClient, eventClient.Client(), workerID)
 	go reporter.Run(context.Background())
 
-	log.Printf("worker gRPC listening on :%s", workerPort)
 	if err := workerpkg.ServeGRPC(":"+workerPort, workerGRPCServer); err != nil {
 		log.Fatal(err)
 	}
