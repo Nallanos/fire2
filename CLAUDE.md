@@ -16,8 +16,7 @@ make run-worker              # Start a worker server (gRPC :50051)
 ```bash
 make sandbox-up              # Start PostgreSQL via docker-compose
 make sandbox-migrate         # Apply DB migrations (dbmate)
-make sandbox-start           # Start API + N workers in background
-make sandbox-register-worker # Register a worker in the database
+make sandbox-start           # Start API + N workers in background (workers self-register via first heartbeat)
 make sandbox-seed            # Create test sandboxes (Node, Python, Go)
 make sandbox-smoke           # Smoke-test the API endpoints
 ```
@@ -133,16 +132,16 @@ Fire2 is an orchestrator-worker system for managing sandbox containers. The **or
 ### gRPC contracts
 
 - `proto/worker/v1/worker.proto` — `WorkerService`: `CreateSandbox`, `StopSandbox`, `RemoveSandbox`, `GetWorkerInfo`
-- `proto/orchestrator/v1/orchestrator.proto` — `OrchestratorService`: `IngestSandboxEvent`
+- `proto/orchestrator/v1/orchestrator.proto` — `OrchestratorService`: `IngestSandboxEvent`, `ReportWorkerHeartbeat`
 
 Generated Go code lives in `gen/`.
 
 ### Data persistence
 
-PostgreSQL (via pgx/v5 + sqlc). Schema managed with dbmate migrations in `internal/db/migrations/`. Workers must be explicitly registered with `create_worker` before the scheduler can route to them. Workers periodically heartbeat resource usage (CPU/mem) back to the DB.
+PostgreSQL (via pgx/v5). Schema managed with dbmate migrations in `internal/db/migrations/`. Workers self-register on their first heartbeat — no manual registration step needed. Workers periodically heartbeat resource usage (CPU/mem) to the orchestrator via gRPC; the orchestrator upserts the worker row.
 
 ### Notable constraints
 
 - gRPC connections use insecure credentials — intended for private/local networks only.
-- Workers are statically registered; there is no auto-discovery.
+- Workers self-register via their first heartbeat; no manual registration step is required.
 - Sandbox creation is asynchronous internally: the HTTP handler enqueues a River job and waits up to 45 seconds for completion, giving the caller a synchronous 201/502 experience.

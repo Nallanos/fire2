@@ -13,10 +13,11 @@ Worker-side gRPC server, sandbox lifecycle management, Docker event reporting, a
 
 ## WorkerService
 
-`NewWorkerService(dockerClient, db.Querier)` creates the service. It owns:
+`NewWorkerService(dockerClient, OrchestratorServiceClient)` creates the service. It owns:
 - **Capacity enforcement** — `running_sandboxes` is incremented before `CreateAndStart` and decremented on failure.
-- **Heartbeat** — periodically reads CPU/memory usage (`gopsutil`) and writes to DB via `UpdateWorker`.
+- **Heartbeat** — periodically reads CPU/memory usage (`gopsutil`) and calls `OrchestratorService.ReportWorkerHeartbeat` via gRPC. The first heartbeat acts as self-registration on the orchestrator side.
 - **Container lifecycle** — delegates to `sandbox.Service` (with Docker client).
+- **No DB credentials** — the worker holds no Postgres connection; all persistence goes through the orchestrator.
 
 `Worker` struct holds current state (protected by a `sync.Mutex` on `running_sandboxes`).
 
@@ -40,6 +41,5 @@ Worker-side gRPC server, sandbox lifecycle management, Docker event reporting, a
 
 ## Constraints
 
-- No auto-registration: the worker must be registered in the DB via `create_worker` CLI before the scheduler can route to it.
 - Docker labels `sandbox_id` and `id` are set on containers so `EventReporter` can correlate events back to sandboxes.
 - gRPC uses insecure credentials — intended for trusted private networks only.
