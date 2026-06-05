@@ -1,0 +1,21 @@
+---
+- name: Create fire2 group
+  ansible.builtin.group:
+    name: "{{ fire2_group }}"
+    state: present
+    system: true
+
+- name: Create fire2 user
+  ansible.builtin.user:
+    name: "{{ fire2_user }}"
+    group: "{{ fire2_group }}"
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+    state: present
+
+- name: Add fire2 user to docker group
+  ansible.builtin.user:
+    name: "{{ fire2_user }}"
+    groups: docker
+    append: true

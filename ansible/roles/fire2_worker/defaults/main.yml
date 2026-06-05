@@ -1,0 +1,20 @@
+---
+fire2_user: fire2
+fire2_group: fire2
+fire2_install_dir: /opt/fire2
+
+worker_port: 50051
+worker_heartbeat_interval: 5s
+worker_cpu_budget: 4
+worker_mem_budget: 3000
+
+# Stable identifier passed as WORKER_ID to the worker process. Using
+# ansible_hostname (the VM's actual OS hostname) keeps self-registration
+# consistent — the worker defaults to os.Hostname() when WORKER_ID is unset,
+# so this prevents duplicate worker rows on hosts where inventory_hostname
+# differs from the real hostname.
+worker_id: "{{ ansible_hostname }}"
+
+# Address the orchestrator dials to reach this worker over gRPC.
+# Defaults to the primary interface IP auto-detected by Ansible.
+worker_advertised_host: "{{ ansible_default_ipv4.address }}"

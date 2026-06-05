@@ -2,6 +2,8 @@
 
 # Go
 /bin/
+/dist/
+/worker
 *.exe
 *.test
 *.out
@@ -11,5 +13,3 @@
 
 # Environment 
 .env
-/worker
-/dist/
