@@ -15,8 +15,6 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-const defaultWorkerGRPCPort = 50051
-
 type Client struct {
 	conn   *grpc.ClientConn
 	worker workerv1.WorkerServiceClient
@@ -118,17 +116,23 @@ func DestroySandboxOnWorker(ctx context.Context, workerAddress, sandboxID string
 	}
 }
 
+// normalizeWorkerAddress builds a dial target from a worker's stored address
+// and port. Workers self-report an ephemeral port via heartbeat, so a port of
+// 0 means "not reported yet" — there is no port to guess, so we return "" and
+// the caller skips that worker.
 func normalizeWorkerAddress(address string, port int32) string {
 	address = strings.TrimSpace(address)
 	if address == "" {
 		address = "127.0.0.1"
 	}
-	if port <= 0 {
-		port = defaultWorkerGRPCPort
-	}
 
+	// An address that already embeds a port is a complete dial target.
 	if _, _, err := net.SplitHostPort(address); err == nil {
 		return address
+	}
+
+	if port <= 0 {
+		return ""
 	}
 
 	return net.JoinHostPort(address, strconv.Itoa(int(port)))

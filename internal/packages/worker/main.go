@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"log"
 	"net"
 	"os"
 	"strings"
@@ -82,10 +83,18 @@ func ServeGRPC(address string, srv workerv1.WorkerServiceServer, opts ...grpc.Se
 		return err
 	}
 
+	// With ephemeral binding (:0) the OS picks the port at listen time, so read
+	// the actual bound port back from the listener — it is what the worker
+	// reports to the orchestrator and what the orchestrator dials.
+	boundPort := lis.Addr().(*net.TCPAddr).Port
+	log.Printf("worker gRPC listening on %s", lis.Addr().String())
+
 	grpcServer := grpc.NewServer(opts...)
 	workerv1.RegisterWorkerServiceServer(grpcServer, srv)
 
 	if workerSrv, ok := srv.(*WorkerGRPCServer); ok {
+		workerSrv.service.SetListenPort(boundPort)
+
 		heartbeatCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 

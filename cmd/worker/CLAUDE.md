@@ -8,7 +8,7 @@ Entry point for a worker node. Runs the `WorkerService` gRPC server and starts t
 2. Connects to the Docker daemon.
 3. Creates `WorkerService` (capacity-aware, owns container lifecycle).
 4. Starts `EventReporter` in a goroutine — watches Docker events, forwards them to the orchestrator via `OrchestratorService.IngestSandboxEvent`.
-5. Serves `WorkerService` gRPC on `WORKER_PORT`.
+5. Serves `WorkerService` gRPC. With `WORKER_PORT` unset or `0` it binds an OS-assigned ephemeral port, reads the actual port back from the listener (`SetListenPort`), and reports it to the orchestrator via heartbeat. A non-zero `WORKER_PORT` pins a specific port.
 
 The worker holds **no database credentials**. Heartbeats are sent to the orchestrator via `OrchestratorService.ReportWorkerHeartbeat`; the orchestrator upserts the worker row. The first heartbeat acts as self-registration.
 
@@ -16,7 +16,7 @@ The worker holds **no database credentials**. Heartbeats are sent to the orchest
 
 | Var | Default |
 |-----|---------|
-| `WORKER_PORT` | `50051` |
+| `WORKER_PORT` | `0` (ephemeral, OS-assigned) |
 | `ORCHESTRATOR_GRPC_ADDR` | `127.0.0.1:7001` |
 | `WORKER_ID` | hostname |
 | `WORKER_ADVERTISED_HOST` | auto-detected |

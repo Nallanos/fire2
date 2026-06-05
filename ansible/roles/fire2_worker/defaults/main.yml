@@ -3,7 +3,10 @@ fire2_user: fire2
 fire2_group: fire2
 fire2_install_dir: /opt/fire2
 
-worker_port: 50051
+# 0 = OS-assigned ephemeral port (self-reported via heartbeat). This lets many
+# workers share one VM without manual per-worker port assignment. Pin a value
+# only if you need a fixed port.
+worker_port: 0
 worker_heartbeat_interval: 5s
 worker_cpu_budget: 4
 worker_mem_budget: 3000
