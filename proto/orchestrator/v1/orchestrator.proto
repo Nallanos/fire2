@@ -9,6 +9,19 @@ import "google/protobuf/timestamp.proto";
 
 service OrchestratorService {
   rpc IngestSandboxEvent(SandboxEvent) returns (google.protobuf.Empty);
+  rpc ReportWorkerHeartbeat(WorkerHeartbeat) returns (google.protobuf.Empty);
+}
+
+message WorkerHeartbeat {
+  string worker_id  = 1;
+  string status     = 2;
+  string address    = 3;
+  int32  port       = 4;
+  int32  capacity   = 5;
+  int32  cpu_budget = 6;
+  int32  mem_budget = 7;
+  int32  cpu_usage  = 8;
+  int32  mem_usage  = 9;
 }
 
 message SandboxEvent {

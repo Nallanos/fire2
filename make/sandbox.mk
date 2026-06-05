@@ -3,7 +3,7 @@
 -include .env
 export
 
-.PHONY: sandbox-up sandbox-migrate sandbox-api sandbox-worker sandbox-register-worker sandbox-smoke sandbox-flow sandbox-check-env sandbox-start sandbox-seed
+.PHONY: sandbox-up sandbox-migrate sandbox-api sandbox-worker sandbox-smoke sandbox-flow sandbox-check-env sandbox-start sandbox-seed
 
 SANDBOX_WORKERS ?= 2
 SANDBOX_WORKER_PORT_BASE ?= 50051
@@ -21,11 +21,8 @@ sandbox-migrate: sandbox-check-env
 sandbox-api: sandbox-check-env
 	$(GO) run ./cmd/api
 
-sandbox-worker: sandbox-check-env
+sandbox-worker:
 	$(GO) run ./cmd/worker
-
-sandbox-register-worker: sandbox-check-env
-	$(GO) run ./cmd/create_worker --port $${WORKER_PORT:-50051} --cpu-budget $${WORKER_CPU_BUDGET:-4} --mem-budget $${WORKER_MEM_BUDGET:-8192}
 
 sandbox-start: sandbox-check-env
 	@mkdir -p $(SANDBOX_LOG_DIR)
@@ -44,9 +41,8 @@ sandbox-start: sandbox-check-env
 	for i in $$(seq 0 $$(($$count - 1))); do \
 		port=$$(($$base_port + $$i)); \
 		echo "starting worker on $$port"; \
-		WORKER_PORT=$$port ORCHESTRATOR_GRPC_ADDR=$$grpc_addr DATABASE_URL=$$DATABASE_URL \
+		WORKER_PORT=$$port ORCHESTRATOR_GRPC_ADDR=$$grpc_addr \
 			nohup $(GO) run ./cmd/worker > $(SANDBOX_LOG_DIR)/worker-$$port.log 2>&1 & \
-		$(GO) run ./cmd/create_worker --port $$port --cpu-budget $${WORKER_CPU_BUDGET:-4} --mem-budget $${WORKER_MEM_BUDGET:-8192} --db-url $$DATABASE_URL > $(SANDBOX_LOG_DIR)/worker-$$port-register.log 2>&1; \
 	done
 	@echo "logs in $(SANDBOX_LOG_DIR)/"
 
