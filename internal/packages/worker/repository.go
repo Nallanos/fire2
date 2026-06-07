@@ -18,6 +18,7 @@ type Repository interface {
 	Get(ctx context.Context, id string) (Worker, error)
 	Update(ctx context.Context, w Worker) (Worker, error)
 	List(ctx context.Context) ([]Worker, error)
+	MarkStaleInactive(ctx context.Context, timeout time.Duration) (int64, error)
 }
 
 type PostgresRepository struct {
@@ -110,6 +111,32 @@ func (r *PostgresRepository) Update(ctx context.Context, w Worker) (Worker, erro
 		return Worker{}, err
 	}
 	return updated, nil
+}
+
+// MarkStaleInactive flips every active worker whose heartbeat is older than
+// timeout to inactive, in a single atomic statement, and returns the number of
+// workers reaped. The WHERE guard (status = active AND last_heartbeat < cutoff)
+// makes this safe against a worker that heartbeats back to life mid-sweep: such
+// a worker no longer matches and is left active. A non-positive timeout falls
+// back to the package default.
+func (r *PostgresRepository) MarkStaleInactive(ctx context.Context, timeout time.Duration) (int64, error) {
+	if timeout <= 0 {
+		timeout = defaultHeartbeatTimeout
+	}
+	const q = `
+		UPDATE worker
+		SET status = $2
+		WHERE status = $3
+		  AND last_heartbeat < now() - make_interval(secs => $1)`
+	tag, err := r.db.Exec(ctx, q,
+		timeout.Seconds(),
+		string(WorkerStatusInactive),
+		string(WorkerStatusActive),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 func (r *PostgresRepository) List(ctx context.Context) ([]Worker, error) {

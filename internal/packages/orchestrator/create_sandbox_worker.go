@@ -241,6 +241,13 @@ func buildCandidates(ctx context.Context, workers []workerpkg.Worker) []WorkerCa
 
 	candidates := make([]WorkerCandidate, 0, len(workers))
 	for _, w := range workers {
+		// Defensive liveness check: skip workers whose heartbeat has gone stale
+		// before the reaper has flipped their status. This also avoids wasting
+		// the 5s GetWorkerInfo timeout below on a worker that is already dead.
+		// A zero timeout uses the package default (15s).
+		if workerpkg.HeartbeatExpired(w.Last_heartbeat, 0) {
+			continue
+		}
 		addr := normalizeWorkerAddress(w.Address, int32(w.Port))
 		c, err := NewClient(gctx, addr)
 		if err != nil {
