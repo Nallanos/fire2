@@ -45,6 +45,7 @@ func main() {
 	workers := river.NewWorkers()
 	river.AddWorker(workers, orchestrator.NewCreateSandboxWorker(pool, sandboxRepo, workerRepo))
 	river.AddWorker(workers, orchestrator.NewCleanupSandboxWorker(sandboxRepo, workerRepo))
+	river.AddWorker(workers, orchestrator.NewReapWorkersWorker(workerRepo, cfg.HeartbeatTimeout))
 
 	riverClient, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues: map[string]river.QueueConfig{
@@ -54,6 +55,13 @@ func main() {
 		Workers:     workers,
 		MaxAttempts: 5,
 		RetryPolicy: &orchestrator.StrongRetryPolicy{},
+		PeriodicJobs: []*river.PeriodicJob{
+			river.NewPeriodicJob(
+				river.PeriodicInterval(cfg.ReaperInterval),
+				func() (river.JobArgs, *river.InsertOpts) { return orchestrator.ReapWorkersArgs{}, nil },
+				&river.PeriodicJobOpts{RunOnStart: true},
+			),
+		},
 	})
 	if err != nil {
 		log.Fatalf("river.NewClient: %v", err)
