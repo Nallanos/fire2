@@ -105,10 +105,16 @@ func (s *EventGRPCServer) ReportWorkerHeartbeat(ctx context.Context, req *orches
 	if req == nil || strings.TrimSpace(req.GetWorkerId()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "worker_id is required")
 	}
+	workerStatus := workerpkg.WorkerStatus(req.GetStatus())
+	switch workerStatus {
+	case workerpkg.WorkerStatusActive, workerpkg.WorkerStatusInactive:
+	default:
+		workerStatus = workerpkg.WorkerStatusActive
+	}
 
 	w := workerpkg.NewWorkerFromHeartbeat(workerpkg.HeartbeatParams{
 		ID:        req.GetWorkerId(),
-		Status:    workerpkg.WorkerStatus(req.GetStatus()),
+		Status:    workerStatus,
 		Address:   req.GetAddress(),
 		Port:      int(req.GetPort()),
 		Capacity:  int(req.GetCapacity()),
