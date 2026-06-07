@@ -1,30 +1,47 @@
 ---
-- name: Deploy worker environment file
-  ansible.builtin.template:
-    src: worker.env.j2
-    dest: "{{ fire2_install_dir }}/worker.env"
-    owner: "{{ fire2_user }}"
-    group: "{{ fire2_group }}"
-    mode: "0640"
-  notify: restart fire2-worker
+# Migrate away from the old single-instance service name if it exists.
+- name: Stop and disable legacy fire2-worker service
+  ansible.builtin.systemd:
+    name: fire2-worker
+    state: stopped
+    enabled: false
+  failed_when: false
+  changed_when: false
 
-- name: Deploy systemd unit file
+- name: Remove legacy fire2-worker unit file
+  ansible.builtin.file:
+    path: /etc/systemd/system/fire2-worker.service
+    state: absent
+  notify: reload systemd
+
+- name: Deploy systemd template unit
   ansible.builtin.template:
-    src: fire2-worker.service.j2
-    dest: /etc/systemd/system/fire2-worker.service
+    src: fire2-worker@.service.j2
+    dest: /etc/systemd/system/fire2-worker@.service
     owner: root
     group: root
     mode: "0644"
   notify: reload systemd
 
-- name: Ensure fire2-worker service is started and enabled
+- name: Deploy worker environment files
+  ansible.builtin.template:
+    src: worker.env.j2
+    dest: "{{ fire2_install_dir }}/worker-{{ item }}.env"
+    owner: "{{ fire2_user }}"
+    group: "{{ fire2_group }}"
+    mode: "0640"
+  loop: "{{ range(1, worker_instances + 1) | list }}"
+  notify: restart fire2-worker instances
+
+- name: Ensure fire2-worker instances are started and enabled
   ansible.builtin.systemd:
-    name: fire2-worker
+    name: "fire2-worker@{{ item }}"
     state: started
     enabled: true
+  loop: "{{ range(1, worker_instances + 1) | list }}"
 
-# Flush now so the service is definitely running before the worker sends its
-# first heartbeat (self-registration) — avoids a window where the orchestrator
-# could route to a worker that hasn't finished restarting yet.
-- name: Flush handlers before worker starts heartbeating
+# Flush now so all instances are running before any caller assumes they are
+# heartbeating — avoids a window where the orchestrator routes to a worker
+# that hasn't finished (re)starting yet.
+- name: Flush handlers before workers start heartbeating
   ansible.builtin.meta: flush_handlers

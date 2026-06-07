@@ -3,6 +3,11 @@ fire2_user: fire2
 fire2_group: fire2
 fire2_install_dir: /opt/fire2
 
+# How many worker processes to run on this VM.
+# Each instance gets its own systemd unit (fire2-worker@N) and env file
+# (worker-N.env) so they can all use port 0 (ephemeral) without colliding.
+worker_instances: 1
+
 # 0 = OS-assigned ephemeral port (self-reported via heartbeat). This lets many
 # workers share one VM without manual per-worker port assignment. Pin a value
 # only if you need a fixed port.
@@ -11,11 +16,9 @@ worker_heartbeat_interval: 5s
 worker_cpu_budget: 4
 worker_mem_budget: 3000
 
-# Stable identifier passed as WORKER_ID to the worker process. Using
-# ansible_hostname (the VM's actual OS hostname) keeps self-registration
-# consistent — the worker defaults to os.Hostname() when WORKER_ID is unset,
-# so this prevents duplicate worker rows on hosts where inventory_hostname
-# differs from the real hostname.
+# Stable identifier prefix passed as WORKER_ID. The instance number is
+# appended automatically (e.g. "myhost-1", "myhost-2") so each process
+# registers as a distinct worker row in the DB.
 worker_id: "{{ ansible_hostname }}"
 
 # Address the orchestrator dials to reach this worker over gRPC.

@@ -112,6 +112,9 @@ func (s *EventGRPCServer) ReportWorkerHeartbeat(ctx context.Context, req *orches
 		workerStatus = workerpkg.WorkerStatusActive
 	}
 
+	log.Printf("received worker heartbeat: worker_id=%s status=%s address=%s port=%d capacity=%d cpu_usage=%d mem_usage=%d",
+		req.GetWorkerId(), req.GetStatus(), req.GetAddress(), req.GetPort(), req.GetCapacity(), req.GetCpuUsage(), req.GetMemUsage())
+
 	w := workerpkg.NewWorkerFromHeartbeat(workerpkg.HeartbeatParams{
 		ID:        req.GetWorkerId(),
 		Status:    workerStatus,

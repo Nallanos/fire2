@@ -61,6 +61,20 @@ func (w *WorkerService) SetWorkerIdentity(id, address string) {
 	}
 }
 
+// SetWorkerBudget pins the CPU and memory budgets so the heartbeat loop does
+// not fall back to auto-detecting the full VM resources from /proc. Call once
+// at startup before the heartbeat loop begins. Zero values are ignored.
+func (w *WorkerService) SetWorkerBudget(cpu, mem int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if cpu > 0 {
+		w.worker.Budget.Cpu_budget = cpu
+	}
+	if mem > 0 {
+		w.worker.Budget.Mem_budget = mem
+	}
+}
+
 // SetListenPort records the actual TCP port the worker's gRPC server bound to.
 // With ephemeral binding (:0) the OS assigns the port at listen time, so this
 // must be called once after the listener is created and before the heartbeat

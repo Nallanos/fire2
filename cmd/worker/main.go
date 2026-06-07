@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"strconv"
 
 	"github/nallanos/fire2/internal/packages/docker"
 	"github/nallanos/fire2/internal/packages/orchestrator"
@@ -30,6 +31,9 @@ func main() {
 	}
 	advertisedHost := os.Getenv("WORKER_ADVERTISED_HOST")
 
+	cpuBudget, _ := strconv.Atoi(os.Getenv("WORKER_CPU_BUDGET"))
+	memBudget, _ := strconv.Atoi(os.Getenv("WORKER_MEM_BUDGET"))
+
 	ctx := context.Background()
 
 	dockerClient, err := docker.NewClient()
@@ -45,6 +49,7 @@ func main() {
 
 	workerService := workerpkg.NewWorkerService(dockerClient, eventClient.Client())
 	workerService.SetWorkerIdentity(workerID, advertisedHost)
+	workerService.SetWorkerBudget(cpuBudget, memBudget)
 	workerGRPCServer := workerpkg.NewWorkerGRPCServer(workerService)
 
 	reporter := workerpkg.NewEventReporter(dockerClient, eventClient.Client(), workerID)

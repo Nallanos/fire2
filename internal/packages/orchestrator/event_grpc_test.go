@@ -390,3 +390,38 @@ func TestHeartbeat_SecondHeartbeat_Updates(t *testing.T) {
 		t.Errorf("capacity after second heartbeat: want 6, got %d", w.Capacity)
 	}
 }
+
+func TestReportWorkerHeartbeat_LogsReceivedHeartbeat(t *testing.T) {
+	ctx := context.Background()
+	pool := testutil.SetupPostgres(t, ctx)
+	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
+	eventRepo := NewEventRepository(pool)
+	workerRepo := workerpkg.NewPostgresRepository(pool)
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo)
+	_, err := srv.ReportWorkerHeartbeat(ctx, &orchestratorv1.WorkerHeartbeat{
+		WorkerId:  "worker-hb",
+		Status:    "healthy",
+		Address:   "127.0.0.1",
+		Port:      7001,
+		Capacity:  3,
+		CpuBudget: 80,
+		MemBudget: 512,
+		CpuUsage:  12,
+		MemUsage:  128,
+	})
+	if err != nil {
+		t.Fatalf("ReportWorkerHeartbeat: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "received worker heartbeat") {
+		t.Fatalf("expected heartbeat log, got: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "worker_id=worker-hb") {
+		t.Fatalf("expected worker id in heartbeat log, got: %s", buf.String())
+	}
+}

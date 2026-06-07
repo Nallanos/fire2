@@ -21,3 +21,7 @@ The worker holds **no database credentials**. Heartbeats are sent to the orchest
 | `WORKER_ID` | hostname |
 | `WORKER_ADVERTISED_HOST` | auto-detected |
 | `WORKER_HEARTBEAT_INTERVAL` | `5s` |
+| `WORKER_CPU_BUDGET` | `0` (auto-detects `runtime.NumCPU()`) |
+| `WORKER_MEM_BUDGET` | `0` (auto-detects total RAM from `/proc/meminfo`) |
+
+When multiple workers share a VM, set `WORKER_CPU_BUDGET` and `WORKER_MEM_BUDGET` to a per-instance fraction of the VM's total resources so the orchestrator schedules correctly. The Ansible role divides `worker_cpu_budget / worker_instances` automatically.
