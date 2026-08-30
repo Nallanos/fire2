@@ -48,12 +48,18 @@ func (w *CleanupSandboxWorker) Work(ctx context.Context, job *river.Job[CleanupS
 		log.Printf("cleanup: clear worker_id failed for sandbox=%s: %v", sandboxID, err)
 	}
 
-	// Transition to failed regardless of which non-terminal state we're in.
-	_, _, err = w.sandboxRepo.UpdateStatus(ctx, sandboxID, sandboxpkg.StatusFailed,
+	target := sandboxpkg.StatusFailed
+	if job.Args.TargetStatus != "" {
+		target = sandboxpkg.Status(job.Args.TargetStatus)
+	}
+
+	// Transition to the target terminal status regardless of which
+	// non-terminal state we're in.
+	_, _, err = w.sandboxRepo.UpdateStatus(ctx, sandboxID, target,
 		sandboxpkg.StatusCleanupPending, sandboxpkg.StatusPending, sandboxpkg.StatusScheduling,
 		sandboxpkg.StatusAssigned, sandboxpkg.StatusStarting, sandboxpkg.StatusRunning)
 	if err != nil {
-		return fmt.Errorf("cleanup: set failed for sandbox=%s: %w", sandboxID, err)
+		return fmt.Errorf("cleanup: set %s for sandbox=%s: %w", target, sandboxID, err)
 	}
 
 	return nil

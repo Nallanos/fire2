@@ -28,6 +28,12 @@ func (CreateSandboxArgs) Kind() string { return "create_sandbox" }
 // CleanupSandboxArgs are the arguments for the cleanup river job.
 type CleanupSandboxArgs struct {
 	SandboxID string `json:"sandbox_id"`
+	// TargetStatus is the terminal status to set once cleanup completes.
+	// Empty defaults to StatusFailed, matching the original caller
+	// (maybeCleanup, after exhausted create-job retries). A user-initiated
+	// delete sets this to StatusStopped instead — same teardown, different
+	// terminal meaning.
+	TargetStatus string `json:"target_status,omitempty"`
 }
 
 func (CleanupSandboxArgs) Kind() string { return "cleanup_sandbox" }
@@ -159,6 +165,8 @@ func (w *CreateSandboxWorker) stepStartContainer(ctx context.Context, sbx sandbo
 		Port:       sbx.Port,
 		Ttl:        sbx.TTL,
 		PreviewUrl: sbx.PreviewURL,
+		VcpuCount:  sbx.VcpuCount,
+		MemSizeMib: sbx.MemSizeMib,
 	})
 	if grpcErr != nil {
 		return w.maybeCleanup(ctx, sbx.ID, isFinal, job, fmt.Errorf("worker CreateSandbox: %w", grpcErr))

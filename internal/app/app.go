@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
+	authpkg "github/nallanos/fire2/internal/packages/auth"
 	"github/nallanos/fire2/internal/packages/orchestrator"
 	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
 	workerpkg "github/nallanos/fire2/internal/packages/worker"
@@ -35,8 +36,16 @@ func New(cfg Config, pool *pgxpool.Pool, riverClient *river.Client[pgx.Tx]) *App
 	workerRepo := workerpkg.NewPostgresRepository(pool)
 	orchestratorHandlers := orchestrator.NewHTTPHandlers(pool, sandboxRepo, workerRepo, riverClient)
 
+	authRepo := authpkg.NewPostgresRepository(pool)
+	authSvc := authpkg.NewService(authRepo)
+	authHandlers := orchestrator.NewAuthHandlers(authSvc)
+
 	r.Route("/api", func(r chi.Router) {
-		r.Mount("/sandboxes", orchestratorHandlers.Routes())
+		r.Mount("/auth", authHandlers.Routes())
+		r.Route("/sandboxes", func(r chi.Router) {
+			r.Use(orchestrator.RequireAuth(authSvc))
+			r.Mount("/", orchestratorHandlers.Routes())
+		})
 	})
 
 	return &App{cfg: cfg, router: r}
