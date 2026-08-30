@@ -34,6 +34,8 @@ func (s *WorkerGRPCServer) CreateSandbox(ctx context.Context, req *workerv1.Crea
 		Port:       req.GetPort(),
 		TTL:        req.GetTtl(),
 		PreviewURL: req.GetPreviewUrl(),
+		VcpuCount:  req.GetVcpuCount(),
+		MemSizeMib: req.GetMemSizeMib(),
 	}); err != nil {
 		return nil, err
 	}
@@ -55,6 +57,13 @@ func (s *WorkerGRPCServer) RemoveSandbox(ctx context.Context, req *workerv1.Remo
 	}
 
 	return &workerv1.RemoveSandboxResponse{}, nil
+}
+
+func (s *WorkerGRPCServer) ListRunningSandboxes(ctx context.Context, req *workerv1.ListRunningSandboxesRequest) (*workerv1.ListRunningSandboxesResponse, error) {
+	containerIDs := s.service.ListRunningSandboxes(ctx)
+	return &workerv1.ListRunningSandboxesResponse{
+		ContainerIds: containerIDs,
+	}, nil
 }
 
 func (s *WorkerGRPCServer) GetWorkerInfo(ctx context.Context, req *workerv1.GetWorkerInfoRequest) (*workerv1.GetWorkerInfoResponse, error) {
