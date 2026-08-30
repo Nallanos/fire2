@@ -14,5 +14,5 @@
     owner: "{{ fire2_user }}"
     group: "{{ fire2_group }}"
     mode: "0755"
-  notify: restart fire2-worker
+  notify: restart fire2-worker instances
 

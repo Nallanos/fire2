@@ -22,5 +22,34 @@ worker_mem_budget: 3000
 worker_id: "{{ ansible_hostname }}"
 
 # Address the orchestrator dials to reach this worker over gRPC.
-# Defaults to the primary interface IP auto-detected by Ansible.
+# Defaults to the primary (public) interface IP auto-detected by Ansible —
+# override in group_vars/workers.yml with the Tailscale IP once the host has
+# joined the tailnet, so gRPC (insecure credentials) never crosses the
+# public internet.
 worker_advertised_host: "{{ ansible_default_ipv4.address }}"
+
+# Restricts the worker's gRPC listener to a single interface. Empty (default)
+# binds all interfaces — fine for local dev, NOT for a host with a public IP.
+worker_grpc_bind_host: ""
+
+# --- Firecracker ---
+# Pinned to a specific published release + its official sha256 so the
+# install task is both reproducible and idempotent (get_url skips the
+# download whenever the destination already matches this checksum).
+firecracker_version: "1.16.1"
+firecracker_checksum_x86_64: "sha256:382a02a869e4d6d5cb14c40577f9545e8458021ea8b0b2d3fc10ec14d9c242e6"
+firecracker_install_dir: /usr/local/bin
+
+# Golden kernel/rootfs images shared by every sandbox VM on this worker.
+# Left empty by default so the role stays a no-op for this part until a
+# real object-storage bucket (e.g. DigitalOcean Spaces) is set up and these
+# are overridden in group_vars/workers.yml. Runs of the playbook before
+# that point simply skip image provisioning instead of failing.
+firecracker_kernel_url: ""
+firecracker_rootfs_url: ""
+firecracker_images_dir: "{{ fire2_install_dir }}/firecracker/images"
+
+# Per-VM working directories (socket + writable rootfs copy) live here, owned
+# by fire2. Read by the worker as FIRECRACKER_SANDBOX_DIR; the Go default
+# (/tmp) is only meant for local dev.
+firecracker_sandbox_dir: "{{ fire2_install_dir }}/firecracker/sandboxes"

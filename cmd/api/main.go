@@ -92,7 +92,7 @@ func main() {
 
 	grpcErrCh := make(chan error, 1)
 	go func() {
-		grpcAddr := ":" + cfg.OrchestratorGRPCPort
+		grpcAddr := cfg.OrchestratorGRPCBindHost + ":" + cfg.OrchestratorGRPCPort
 		log.Printf("orchestrator gRPC listening on %s", grpcAddr)
 		grpcErrCh <- orchestrator.ServeEventGRPC(grpcAddr,
 			orchestrator.NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo))

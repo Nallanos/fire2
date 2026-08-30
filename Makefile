@@ -48,3 +48,23 @@ ansible-smoke:
 		-H 'Content-Type: application/json' \
 		-d '{"runtime":"node","ttl":3600}' | cat
 	curl -sS http://localhost:$(PORT)/api/sandboxes | cat
+
+# One-command real Firecracker boot test: builds cmd/firecracker-smoke for
+# linux/amd64, ships it to FC_HOST, runs it against whatever kernel/rootfs
+# live in FC_IMAGE_DIR there, and cleans up after itself either way.
+# Override for a host provisioned via the real Ansible path once
+# firecracker_kernel_url/firecracker_rootfs_url are set:
+#   make firecracker-smoke FC_IMAGE_DIR=/opt/fire2/firecracker/images
+FC_HOST      ?= 167.99.38.141
+FC_SSH_KEY   ?= ~/.ssh/fire2_worker_deploy
+FC_IMAGE_DIR ?= /opt/fc-test
+
+.PHONY: firecracker-smoke
+firecracker-smoke:
+	@mkdir -p dist
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o dist/firecracker-smoke ./cmd/firecracker-smoke
+	scp -i $(FC_SSH_KEY) -o StrictHostKeyChecking=accept-new dist/firecracker-smoke root@$(FC_HOST):/tmp/firecracker-smoke
+	ssh -i $(FC_SSH_KEY) root@$(FC_HOST) '\
+		chmod +x /tmp/firecracker-smoke; \
+		FIRECRACKER_IMAGE_DIR=$(FC_IMAGE_DIR) /tmp/firecracker-smoke; \
+		code=$$?; rm -f /tmp/firecracker-smoke; exit $$code'

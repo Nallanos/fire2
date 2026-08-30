@@ -1,0 +1,27 @@
+---
+# Installs Tailscale so this worker's gRPC listener can bind to a private
+# tailnet IP instead of its public interface. Installation is automated;
+# joining the tailnet is not — `tailscale up` needs either interactive
+# browser auth or a pre-generated authkey (tailscale_authkey, left unset by
+# default). Without one, this task installs the client and stops there —
+# run `tailscale up` by hand once, then set worker_advertised_host /
+# worker_grpc_bind_host in group_vars to the IP it prints.
+
+- name: Check whether Tailscale is already installed
+  ansible.builtin.command: which tailscale
+  register: tailscale_check
+  changed_when: false
+  failed_when: false
+
+- name: Install Tailscale
+  ansible.builtin.shell: curl -fsSL https://tailscale.com/install.sh | sh
+  when: tailscale_check.rc != 0
+  args:
+    executable: /bin/bash
+
+- name: Join the tailnet with an authkey (skipped if tailscale_authkey unset)
+  ansible.builtin.command: >
+    tailscale up --authkey={{ tailscale_authkey }}
+    --hostname={{ inventory_hostname }} --ssh=false
+  when: tailscale_authkey is defined and tailscale_authkey | length > 0
+  changed_when: true

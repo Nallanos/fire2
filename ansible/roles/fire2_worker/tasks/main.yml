@@ -6,6 +6,9 @@
     fail_msg: "orchestrator_grpc_addr must be set in group_vars/workers.yml"
 
 - ansible.builtin.import_tasks: docker.yml
+- ansible.builtin.import_tasks: tailscale.yml
 - ansible.builtin.import_tasks: user.yml
+- ansible.builtin.import_tasks: firecracker.yml
+- ansible.builtin.import_tasks: firecracker_images.yml
 - ansible.builtin.import_tasks: binary.yml
 - ansible.builtin.import_tasks: systemd.yml
