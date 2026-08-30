@@ -130,6 +130,8 @@ type CreateSandboxRequest struct {
 	Port          int32                  `protobuf:"varint,4,opt,name=port,proto3" json:"port,omitempty"`
 	Ttl           int64                  `protobuf:"varint,5,opt,name=ttl,proto3" json:"ttl,omitempty"`
 	PreviewUrl    string                 `protobuf:"bytes,6,opt,name=preview_url,json=previewUrl,proto3" json:"preview_url,omitempty"`
+	VcpuCount     int32                  `protobuf:"varint,7,opt,name=vcpuCount,proto3" json:"vcpuCount,omitempty"`
+	MemSizeMib    int32                  `protobuf:"varint,8,opt,name=memSizeMib,proto3" json:"memSizeMib,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -204,6 +206,20 @@ func (x *CreateSandboxRequest) GetPreviewUrl() string {
 		return x.PreviewUrl
 	}
 	return ""
+}
+
+func (x *CreateSandboxRequest) GetVcpuCount() int32 {
+	if x != nil {
+		return x.VcpuCount
+	}
+	return 0
+}
+
+func (x *CreateSandboxRequest) GetMemSizeMib() int32 {
+	if x != nil {
+		return x.MemSizeMib
+	}
+	return 0
 }
 
 type CreateSandboxResponse struct {
@@ -410,6 +426,86 @@ func (*RemoveSandboxResponse) Descriptor() ([]byte, []int) {
 	return file_worker_v1_worker_proto_rawDescGZIP(), []int{6}
 }
 
+type ListRunningSandboxesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListRunningSandboxesRequest) Reset() {
+	*x = ListRunningSandboxesRequest{}
+	mi := &file_worker_v1_worker_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListRunningSandboxesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListRunningSandboxesRequest) ProtoMessage() {}
+
+func (x *ListRunningSandboxesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_worker_v1_worker_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListRunningSandboxesRequest.ProtoReflect.Descriptor instead.
+func (*ListRunningSandboxesRequest) Descriptor() ([]byte, []int) {
+	return file_worker_v1_worker_proto_rawDescGZIP(), []int{7}
+}
+
+type ListRunningSandboxesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ContainerIds  []string               `protobuf:"bytes,1,rep,name=container_ids,json=containerIds,proto3" json:"container_ids,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListRunningSandboxesResponse) Reset() {
+	*x = ListRunningSandboxesResponse{}
+	mi := &file_worker_v1_worker_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListRunningSandboxesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListRunningSandboxesResponse) ProtoMessage() {}
+
+func (x *ListRunningSandboxesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_worker_v1_worker_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListRunningSandboxesResponse.ProtoReflect.Descriptor instead.
+func (*ListRunningSandboxesResponse) Descriptor() ([]byte, []int) {
+	return file_worker_v1_worker_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ListRunningSandboxesResponse) GetContainerIds() []string {
+	if x != nil {
+		return x.ContainerIds
+	}
+	return nil
+}
+
 type GetWorkerInfoRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -418,7 +514,7 @@ type GetWorkerInfoRequest struct {
 
 func (x *GetWorkerInfoRequest) Reset() {
 	*x = GetWorkerInfoRequest{}
-	mi := &file_worker_v1_worker_proto_msgTypes[7]
+	mi := &file_worker_v1_worker_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -430,7 +526,7 @@ func (x *GetWorkerInfoRequest) String() string {
 func (*GetWorkerInfoRequest) ProtoMessage() {}
 
 func (x *GetWorkerInfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_worker_v1_worker_proto_msgTypes[7]
+	mi := &file_worker_v1_worker_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -443,7 +539,7 @@ func (x *GetWorkerInfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWorkerInfoRequest.ProtoReflect.Descriptor instead.
 func (*GetWorkerInfoRequest) Descriptor() ([]byte, []int) {
-	return file_worker_v1_worker_proto_rawDescGZIP(), []int{7}
+	return file_worker_v1_worker_proto_rawDescGZIP(), []int{9}
 }
 
 type GetWorkerInfoResponse struct {
@@ -463,7 +559,7 @@ type GetWorkerInfoResponse struct {
 
 func (x *GetWorkerInfoResponse) Reset() {
 	*x = GetWorkerInfoResponse{}
-	mi := &file_worker_v1_worker_proto_msgTypes[8]
+	mi := &file_worker_v1_worker_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -475,7 +571,7 @@ func (x *GetWorkerInfoResponse) String() string {
 func (*GetWorkerInfoResponse) ProtoMessage() {}
 
 func (x *GetWorkerInfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_worker_v1_worker_proto_msgTypes[8]
+	mi := &file_worker_v1_worker_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -488,7 +584,7 @@ func (x *GetWorkerInfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWorkerInfoResponse.ProtoReflect.Descriptor instead.
 func (*GetWorkerInfoResponse) Descriptor() ([]byte, []int) {
-	return file_worker_v1_worker_proto_rawDescGZIP(), []int{8}
+	return file_worker_v1_worker_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *GetWorkerInfoResponse) GetId() string {
@@ -569,7 +665,7 @@ const file_worker_v1_worker_proto_rawDesc = "" +
 	"\x04port\x18\x06 \x01(\x05R\x04port\x12\x1f\n" +
 	"\vpreview_url\x18\a \x01(\tR\n" +
 	"previewUrl\x12\x14\n" +
-	"\x05image\x18\b \x01(\tR\x05image\"\x9d\x01\n" +
+	"\x05image\x18\b \x01(\tR\x05image\"\xdb\x01\n" +
 	"\x14CreateSandboxRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
 	"\aruntime\x18\x02 \x01(\tR\aruntime\x12\x14\n" +
@@ -577,7 +673,11 @@ const file_worker_v1_worker_proto_rawDesc = "" +
 	"\x04port\x18\x04 \x01(\x05R\x04port\x12\x10\n" +
 	"\x03ttl\x18\x05 \x01(\x03R\x03ttl\x12\x1f\n" +
 	"\vpreview_url\x18\x06 \x01(\tR\n" +
-	"previewUrl\"E\n" +
+	"previewUrl\x12\x1c\n" +
+	"\tvcpuCount\x18\a \x01(\x05R\tvcpuCount\x12\x1e\n" +
+	"\n" +
+	"memSizeMib\x18\b \x01(\x05R\n" +
+	"memSizeMib\"E\n" +
 	"\x15CreateSandboxResponse\x12,\n" +
 	"\asandbox\x18\x01 \x01(\v2\x12.worker.v1.SandboxR\asandbox\"7\n" +
 	"\x12StopSandboxRequest\x12!\n" +
@@ -585,7 +685,10 @@ const file_worker_v1_worker_proto_rawDesc = "" +
 	"\x13StopSandboxResponse\"9\n" +
 	"\x14RemoveSandboxRequest\x12!\n" +
 	"\fcontainer_id\x18\x01 \x01(\tR\vcontainerId\"\x17\n" +
-	"\x15RemoveSandboxResponse\"\x16\n" +
+	"\x15RemoveSandboxResponse\"\x1d\n" +
+	"\x1bListRunningSandboxesRequest\"C\n" +
+	"\x1cListRunningSandboxesResponse\x12#\n" +
+	"\rcontainer_ids\x18\x01 \x03(\tR\fcontainerIds\"\x16\n" +
 	"\x14GetWorkerInfoRequest\"\xb0\x02\n" +
 	"\x15GetWorkerInfoResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
@@ -598,11 +701,12 @@ const file_worker_v1_worker_proto_rawDesc = "" +
 	"\bcapacity\x18\x06 \x01(\x05R\bcapacity\x12\x1b\n" +
 	"\tcpu_usage\x18\a \x01(\x05R\bcpuUsage\x12\x1b\n" +
 	"\tmem_usage\x18\b \x01(\x05R\bmemUsage\x12A\n" +
-	"\x0elast_heartbeat\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\rlastHeartbeat2\xd9\x02\n" +
+	"\x0elast_heartbeat\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\rlastHeartbeat2\xc2\x03\n" +
 	"\rWorkerService\x12R\n" +
 	"\rCreateSandbox\x12\x1f.worker.v1.CreateSandboxRequest\x1a .worker.v1.CreateSandboxResponse\x12L\n" +
 	"\vStopSandbox\x12\x1d.worker.v1.StopSandboxRequest\x1a\x1e.worker.v1.StopSandboxResponse\x12R\n" +
-	"\rRemoveSandbox\x12\x1f.worker.v1.RemoveSandboxRequest\x1a .worker.v1.RemoveSandboxResponse\x12R\n" +
+	"\rRemoveSandbox\x12\x1f.worker.v1.RemoveSandboxRequest\x1a .worker.v1.RemoveSandboxResponse\x12g\n" +
+	"\x14ListRunningSandboxes\x12&.worker.v1.ListRunningSandboxesRequest\x1a'.worker.v1.ListRunningSandboxesResponse\x12R\n" +
 	"\rGetWorkerInfo\x12\x1f.worker.v1.GetWorkerInfoRequest\x1a .worker.v1.GetWorkerInfoResponseB,Z*github/nallanos/fire2/gen/worker/v1;workerb\x06proto3"
 
 var (
@@ -617,36 +721,40 @@ func file_worker_v1_worker_proto_rawDescGZIP() []byte {
 	return file_worker_v1_worker_proto_rawDescData
 }
 
-var file_worker_v1_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_worker_v1_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_worker_v1_worker_proto_goTypes = []any{
-	(*Sandbox)(nil),               // 0: worker.v1.Sandbox
-	(*CreateSandboxRequest)(nil),  // 1: worker.v1.CreateSandboxRequest
-	(*CreateSandboxResponse)(nil), // 2: worker.v1.CreateSandboxResponse
-	(*StopSandboxRequest)(nil),    // 3: worker.v1.StopSandboxRequest
-	(*StopSandboxResponse)(nil),   // 4: worker.v1.StopSandboxResponse
-	(*RemoveSandboxRequest)(nil),  // 5: worker.v1.RemoveSandboxRequest
-	(*RemoveSandboxResponse)(nil), // 6: worker.v1.RemoveSandboxResponse
-	(*GetWorkerInfoRequest)(nil),  // 7: worker.v1.GetWorkerInfoRequest
-	(*GetWorkerInfoResponse)(nil), // 8: worker.v1.GetWorkerInfoResponse
-	(*timestamppb.Timestamp)(nil), // 9: google.protobuf.Timestamp
+	(*Sandbox)(nil),                      // 0: worker.v1.Sandbox
+	(*CreateSandboxRequest)(nil),         // 1: worker.v1.CreateSandboxRequest
+	(*CreateSandboxResponse)(nil),        // 2: worker.v1.CreateSandboxResponse
+	(*StopSandboxRequest)(nil),           // 3: worker.v1.StopSandboxRequest
+	(*StopSandboxResponse)(nil),          // 4: worker.v1.StopSandboxResponse
+	(*RemoveSandboxRequest)(nil),         // 5: worker.v1.RemoveSandboxRequest
+	(*RemoveSandboxResponse)(nil),        // 6: worker.v1.RemoveSandboxResponse
+	(*ListRunningSandboxesRequest)(nil),  // 7: worker.v1.ListRunningSandboxesRequest
+	(*ListRunningSandboxesResponse)(nil), // 8: worker.v1.ListRunningSandboxesResponse
+	(*GetWorkerInfoRequest)(nil),         // 9: worker.v1.GetWorkerInfoRequest
+	(*GetWorkerInfoResponse)(nil),        // 10: worker.v1.GetWorkerInfoResponse
+	(*timestamppb.Timestamp)(nil),        // 11: google.protobuf.Timestamp
 }
 var file_worker_v1_worker_proto_depIdxs = []int32{
-	9, // 0: worker.v1.Sandbox.created_at:type_name -> google.protobuf.Timestamp
-	0, // 1: worker.v1.CreateSandboxResponse.sandbox:type_name -> worker.v1.Sandbox
-	9, // 2: worker.v1.GetWorkerInfoResponse.last_heartbeat:type_name -> google.protobuf.Timestamp
-	1, // 3: worker.v1.WorkerService.CreateSandbox:input_type -> worker.v1.CreateSandboxRequest
-	3, // 4: worker.v1.WorkerService.StopSandbox:input_type -> worker.v1.StopSandboxRequest
-	5, // 5: worker.v1.WorkerService.RemoveSandbox:input_type -> worker.v1.RemoveSandboxRequest
-	7, // 6: worker.v1.WorkerService.GetWorkerInfo:input_type -> worker.v1.GetWorkerInfoRequest
-	2, // 7: worker.v1.WorkerService.CreateSandbox:output_type -> worker.v1.CreateSandboxResponse
-	4, // 8: worker.v1.WorkerService.StopSandbox:output_type -> worker.v1.StopSandboxResponse
-	6, // 9: worker.v1.WorkerService.RemoveSandbox:output_type -> worker.v1.RemoveSandboxResponse
-	8, // 10: worker.v1.WorkerService.GetWorkerInfo:output_type -> worker.v1.GetWorkerInfoResponse
-	7, // [7:11] is the sub-list for method output_type
-	3, // [3:7] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	11, // 0: worker.v1.Sandbox.created_at:type_name -> google.protobuf.Timestamp
+	0,  // 1: worker.v1.CreateSandboxResponse.sandbox:type_name -> worker.v1.Sandbox
+	11, // 2: worker.v1.GetWorkerInfoResponse.last_heartbeat:type_name -> google.protobuf.Timestamp
+	1,  // 3: worker.v1.WorkerService.CreateSandbox:input_type -> worker.v1.CreateSandboxRequest
+	3,  // 4: worker.v1.WorkerService.StopSandbox:input_type -> worker.v1.StopSandboxRequest
+	5,  // 5: worker.v1.WorkerService.RemoveSandbox:input_type -> worker.v1.RemoveSandboxRequest
+	7,  // 6: worker.v1.WorkerService.ListRunningSandboxes:input_type -> worker.v1.ListRunningSandboxesRequest
+	9,  // 7: worker.v1.WorkerService.GetWorkerInfo:input_type -> worker.v1.GetWorkerInfoRequest
+	2,  // 8: worker.v1.WorkerService.CreateSandbox:output_type -> worker.v1.CreateSandboxResponse
+	4,  // 9: worker.v1.WorkerService.StopSandbox:output_type -> worker.v1.StopSandboxResponse
+	6,  // 10: worker.v1.WorkerService.RemoveSandbox:output_type -> worker.v1.RemoveSandboxResponse
+	8,  // 11: worker.v1.WorkerService.ListRunningSandboxes:output_type -> worker.v1.ListRunningSandboxesResponse
+	10, // 12: worker.v1.WorkerService.GetWorkerInfo:output_type -> worker.v1.GetWorkerInfoResponse
+	8,  // [8:13] is the sub-list for method output_type
+	3,  // [3:8] is the sub-list for method input_type
+	3,  // [3:3] is the sub-list for extension type_name
+	3,  // [3:3] is the sub-list for extension extendee
+	0,  // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_worker_v1_worker_proto_init() }
@@ -660,7 +768,7 @@ func file_worker_v1_worker_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_worker_v1_worker_proto_rawDesc), len(file_worker_v1_worker_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -10,6 +10,7 @@ service WorkerService {
   rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
   rpc StopSandbox(StopSandboxRequest) returns (StopSandboxResponse);
   rpc RemoveSandbox(RemoveSandboxRequest) returns (RemoveSandboxResponse);
+  rpc ListRunningSandboxes(ListRunningSandboxesRequest) returns (ListRunningSandboxesResponse);
   rpc GetWorkerInfo(GetWorkerInfoRequest) returns (GetWorkerInfoResponse);
 }
 
@@ -31,6 +32,8 @@ message CreateSandboxRequest {
   int32 port = 4;
   int64 ttl = 5;
   string preview_url = 6;
+  int32 vcpuCount = 7;
+	int32 memSizeMib = 8;
 }
 
 message CreateSandboxResponse {
@@ -49,6 +52,12 @@ message RemoveSandboxRequest {
 
 message RemoveSandboxResponse {}
 
+message ListRunningSandboxesRequest {}
+
+message ListRunningSandboxesResponse {
+  repeated string container_ids = 1;
+}
+
 message GetWorkerInfoRequest {}
 
 message GetWorkerInfoResponse {
@@ -62,3 +71,4 @@ message GetWorkerInfoResponse {
   int32 mem_usage = 8;
   google.protobuf.Timestamp last_heartbeat = 9;
 }
+

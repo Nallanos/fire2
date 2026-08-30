@@ -17,6 +17,8 @@ type Repository interface {
 	Create(ctx context.Context, s Sandbox) (Sandbox, error)
 	GetByID(ctx context.Context, id string) (Sandbox, error)
 	List(ctx context.Context) ([]Sandbox, error)
+	// ListByUserID returns only sandboxes owned by userID, newest first.
+	ListByUserID(ctx context.Context, userID string) ([]Sandbox, error)
 	// UpdateStatus advances status only when current status is one of allowedFrom.
 	// Returns (updated sandbox, rowsAffected, error). rowsAffected=0 means the guard rejected the update.
 	UpdateStatus(ctx context.Context, id string, status Status, allowedFrom ...Status) (Sandbox, int64, error)
@@ -42,19 +44,20 @@ func (r *PostgresRepository) WithTx(tx pgx.Tx) Repository {
 
 func (r *PostgresRepository) Create(ctx context.Context, s Sandbox) (Sandbox, error) {
 	const q = `
-		INSERT INTO sandboxes (id, runtime, status, image, port, ttl, preview_url, created_at, worker_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		RETURNING id, runtime, status, ttl, created_at, port, preview_url, image, worker_id`
+		INSERT INTO sandboxes (id, runtime, status, image, port, ttl, preview_url, created_at, worker_id, vcpu_count, mem_size_mib, user_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		RETURNING id, runtime, status, ttl, created_at, port, preview_url, image, worker_id, vcpu_count, mem_size_mib, user_id`
 
 	row := r.db.QueryRow(ctx, q,
 		s.ID, s.Runtime, string(s.Status), s.Image, s.Port, s.TTL, s.PreviewURL, s.CreatedAt, s.WorkerID,
+		s.VcpuCount, s.MemSizeMib, s.UserID,
 	)
 	return scanSandbox(row)
 }
 
 func (r *PostgresRepository) GetByID(ctx context.Context, id string) (Sandbox, error) {
 	const q = `
-		SELECT id, runtime, status, ttl, created_at, port, preview_url, image, worker_id
+		SELECT id, runtime, status, ttl, created_at, port, preview_url, image, worker_id, vcpu_count, mem_size_mib, user_id
 		FROM sandboxes WHERE id = $1 LIMIT 1`
 
 	row := r.db.QueryRow(ctx, q, id)
@@ -70,10 +73,20 @@ func (r *PostgresRepository) GetByID(ctx context.Context, id string) (Sandbox, e
 
 func (r *PostgresRepository) List(ctx context.Context) ([]Sandbox, error) {
 	const q = `
-		SELECT id, runtime, status, ttl, created_at, port, preview_url, image, worker_id
+		SELECT id, runtime, status, ttl, created_at, port, preview_url, image, worker_id, vcpu_count, mem_size_mib, user_id
 		FROM sandboxes ORDER BY created_at DESC`
+	return r.queryList(ctx, q)
+}
 
-	rows, err := r.db.Query(ctx, q)
+func (r *PostgresRepository) ListByUserID(ctx context.Context, userID string) ([]Sandbox, error) {
+	const q = `
+		SELECT id, runtime, status, ttl, created_at, port, preview_url, image, worker_id, vcpu_count, mem_size_mib, user_id
+		FROM sandboxes WHERE user_id = $1 ORDER BY created_at DESC`
+	return r.queryList(ctx, q, userID)
+}
+
+func (r *PostgresRepository) queryList(ctx context.Context, q string, args ...any) ([]Sandbox, error) {
+	rows, err := r.db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +118,7 @@ func (r *PostgresRepository) UpdateStatus(ctx context.Context, id string, status
 
 	q := `UPDATE sandboxes SET status = $1 WHERE id = $2 AND status IN (` +
 		joinStrings(placeholders) +
-		`) RETURNING id, runtime, status, ttl, created_at, port, preview_url, image, worker_id`
+		`) RETURNING id, runtime, status, ttl, created_at, port, preview_url, image, worker_id, vcpu_count, mem_size_mib, user_id`
 
 	row := r.db.QueryRow(ctx, q, args...)
 	s, err := scanSandbox(row)
@@ -122,7 +135,7 @@ func (r *PostgresRepository) AssignWorker(ctx context.Context, id string, worker
 	const q = `
 		UPDATE sandboxes SET worker_id = $1, status = 'assigned'
 		WHERE id = $2 AND status = 'scheduling'
-		RETURNING id, runtime, status, ttl, created_at, port, preview_url, image, worker_id`
+		RETURNING id, runtime, status, ttl, created_at, port, preview_url, image, worker_id, vcpu_count, mem_size_mib, user_id`
 
 	row := r.db.QueryRow(ctx, q, workerID, id)
 	s, err := scanSandbox(row)
@@ -147,7 +160,7 @@ func (r *PostgresRepository) Delete(ctx context.Context, id string) error {
 	return err
 }
 
-// scanSandbox scans a row from a SELECT over all 9 sandbox columns.
+// scanSandbox scans a row from a SELECT over all 12 sandbox columns.
 type scanner interface {
 	Scan(dest ...any) error
 }
@@ -156,10 +169,11 @@ func scanSandbox(row scanner) (Sandbox, error) {
 	var s Sandbox
 	var createdAt time.Time
 	var workerID pgtype.Text
+	var userID pgtype.Text
 	err := row.Scan(
 		&s.ID, &s.Runtime, &s.Status, &s.TTL,
 		&createdAt, &s.Port, &s.PreviewURL, &s.Image,
-		&workerID,
+		&workerID, &s.VcpuCount, &s.MemSizeMib, &userID,
 	)
 	if err != nil {
 		return Sandbox{}, err
@@ -168,6 +182,10 @@ func scanSandbox(row scanner) (Sandbox, error) {
 	if workerID.Valid {
 		v := workerID.String
 		s.WorkerID = &v
+	}
+	if userID.Valid {
+		v := userID.String
+		s.UserID = &v
 	}
 	return s, nil
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
+	workerv1 "github/nallanos/fire2/gen/worker/v1"
 	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
 	workerpkg "github/nallanos/fire2/internal/packages/worker"
 )
@@ -45,6 +46,7 @@ func (h *HTTPHandlers) Routes() http.Handler {
 	r.Post("/", h.createSandbox)
 	r.Get("/", h.listSandboxes)
 	r.Get("/{id}", h.getSandboxByID)
+	r.Delete("/{id}", h.deleteSandbox)
 	return r
 }
 
@@ -54,9 +56,26 @@ type createSandboxRequest struct {
 	Port       int32  `json:"port"`
 	TTL        int64  `json:"ttl"`
 	PreviewURL string `json:"preview_url"`
+	VcpuCount  int32  `json:"vcpu_count"`
+	MemSizeMib int32  `json:"mem_size_mib"`
 }
 
+// Defaults match the Firecracker config validated manually during
+// development. Applied whenever the caller doesn't specify a value, so
+// requests from clients unaware of these fields still get a Firecracker-valid
+// machine-config instead of a rejected vcpu_count of 0.
+const (
+	defaultVcpuCount  int32 = 1
+	defaultMemSizeMib int32 = 256
+)
+
 func (h *HTTPHandlers) createSandbox(w http.ResponseWriter, r *http.Request) {
+	user, ok := UserFromContext(r.Context())
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+
 	var body createSandboxRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, sandboxpkg.ErrMsgInvalidJSON, http.StatusBadRequest)
@@ -96,6 +115,14 @@ func (h *HTTPHandlers) createSandbox(w http.ResponseWriter, r *http.Request) {
 	if port <= 0 {
 		port = defaultSandboxPort()
 	}
+	vcpuCount := body.VcpuCount
+	if vcpuCount <= 0 {
+		vcpuCount = defaultVcpuCount
+	}
+	memSizeMib := body.MemSizeMib
+	if memSizeMib <= 0 {
+		memSizeMib = defaultMemSizeMib
+	}
 
 	// Subscribe before the insert so we don't miss the completion event.
 	eventCh, cancelSub := h.riverClient.Subscribe(
@@ -124,6 +151,9 @@ func (h *HTTPHandlers) createSandbox(w http.ResponseWriter, r *http.Request) {
 		TTL:        body.TTL,
 		PreviewURL: body.PreviewURL,
 		CreatedAt:  time.Now().UTC(),
+		VcpuCount:  vcpuCount,
+		MemSizeMib: memSizeMib,
+		UserID:     &user.ID,
 	})
 	if err != nil {
 		log.Printf("create sandbox record failed: id=%s err=%v", sandboxID, err)
@@ -187,6 +217,12 @@ func (h *HTTPHandlers) createSandbox(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandlers) getSandboxByID(w http.ResponseWriter, r *http.Request) {
+	user, ok := UserFromContext(r.Context())
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		http.Error(w, sandboxpkg.ErrMsgIDRequired, http.StatusBadRequest)
@@ -203,19 +239,151 @@ func (h *HTTPHandlers) getSandboxByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 404 rather than 403 for someone else's sandbox — don't confirm the ID
+	// exists to a caller who doesn't own it.
+	if sbx.UserID == nil || *sbx.UserID != user.ID {
+		http.Error(w, sandboxpkg.ErrMsgNotFound, http.StatusNotFound)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(sbx)
 }
 
 func (h *HTTPHandlers) listSandboxes(w http.ResponseWriter, r *http.Request) {
-	items, err := h.sandboxRepo.List(r.Context())
-	if err != nil {
-		http.Error(w, sandboxpkg.ErrMsgListSandboxesFailed, http.StatusInternalServerError)
+	user, ok := UserFromContext(r.Context())
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
 
+	// List all workers in the database
+	workers, err := h.workerRepo.List(r.Context())
+	if err != nil {
+		log.Printf("list workers failed: %v", err)
+		http.Error(w, "failed to list workers", http.StatusInternalServerError)
+		return
+	}
+
+	// Collect running sandboxes from all workers
+	sandboxes := make([]sandboxpkg.Sandbox, 0)
+
+	for _, worker := range workers {
+
+		client, err := NewClient(r.Context(), normalizeWorkerAddress(worker.Address, int32(worker.Port)))
+		if err != nil {
+			log.Printf("failed to create gRPC client for worker %s: %v", worker.ID, err)
+			continue
+		}
+		defer client.Close()
+
+		sbxResp, err := client.ListRunningSandboxes(r.Context(), &workerv1.ListRunningSandboxesRequest{})
+		if err != nil {
+			log.Printf("failed to list running sandboxes for worker %s: %v", worker.ID, err)
+			continue
+		}
+
+		for _, sbx := range sbxResp.ContainerIds {
+			sandbox, err := h.sandboxRepo.GetByID(r.Context(), sbx)
+			if err != nil {
+				log.Printf("failed to fetch sandbox details for ID %s: %v", sbx, err)
+				continue
+			}
+			if sandbox.UserID == nil || *sandbox.UserID != user.ID {
+				continue
+			}
+			sandboxes = append(sandboxes, sandbox)
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(items)
+	_ = json.NewEncoder(w).Encode(sandboxes)
+}
+
+// deleteSandbox asks for a sandbox to be torn down. Deletion is asynchronous
+// — this only transitions the row to cleanup_pending and enqueues the same
+// cleanup_sandbox job the create-job's exhausted-retry path uses, with
+// TargetStatus set to "stopped" so a deliberate delete reads differently
+// from a genuine failure once cleanup completes.
+func (h *HTTPHandlers) deleteSandbox(w http.ResponseWriter, r *http.Request) {
+	user, ok := UserFromContext(r.Context())
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		http.Error(w, sandboxpkg.ErrMsgIDRequired, http.StatusBadRequest)
+		return
+	}
+
+	sbx, err := h.sandboxRepo.GetByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sandboxpkg.ErrNotFound) {
+			http.Error(w, sandboxpkg.ErrMsgNotFound, http.StatusNotFound)
+			return
+		}
+		http.Error(w, sandboxpkg.ErrMsgFetchSandboxFailed, http.StatusInternalServerError)
+		return
+	}
+	if sbx.UserID == nil || *sbx.UserID != user.ID {
+		http.Error(w, sandboxpkg.ErrMsgNotFound, http.StatusNotFound)
+		return
+	}
+
+	// Already terminal (or already being cleaned up): idempotent no-op.
+	switch sbx.Status {
+	case sandboxpkg.StatusStopped, sandboxpkg.StatusFailed, sandboxpkg.StatusCleanupPending, sandboxpkg.StatusCleanedUp:
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	if h.riverClient == nil {
+		log.Printf("river client is not configured")
+		http.Error(w, "delete sandbox failed", http.StatusInternalServerError)
+		return
+	}
+
+	tx, err := h.pool.Begin(r.Context())
+	if err != nil {
+		log.Printf("delete sandbox: begin tx failed: id=%s err=%v", id, err)
+		http.Error(w, "delete sandbox failed", http.StatusInternalServerError)
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+
+	_, n, err := h.sandboxRepo.WithTx(tx).UpdateStatus(r.Context(), id, sandboxpkg.StatusCleanupPending,
+		sandboxpkg.StatusPending, sandboxpkg.StatusScheduling, sandboxpkg.StatusAssigned,
+		sandboxpkg.StatusStarting, sandboxpkg.StatusRunning)
+	if err != nil {
+		log.Printf("delete sandbox: set cleanup_pending failed: id=%s err=%v", id, err)
+		http.Error(w, "delete sandbox failed", http.StatusInternalServerError)
+		return
+	}
+	if n == 0 {
+		// Status advanced concurrently (e.g. it just failed on its own) —
+		// idempotent from the caller's point of view.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	if _, err := h.riverClient.InsertTx(r.Context(), tx, CleanupSandboxArgs{
+		SandboxID:    id,
+		TargetStatus: string(sandboxpkg.StatusStopped),
+	}, &river.InsertOpts{Queue: "cleanup"}); err != nil {
+		log.Printf("delete sandbox: insert cleanup job failed: id=%s err=%v", id, err)
+		http.Error(w, "delete sandbox failed", http.StatusInternalServerError)
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		log.Printf("delete sandbox: commit tx failed: id=%s err=%v", id, err)
+		http.Error(w, "delete sandbox failed", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func defaultImageForRuntime(runtime string) string {

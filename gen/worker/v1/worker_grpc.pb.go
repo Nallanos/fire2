@@ -19,10 +19,11 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	WorkerService_CreateSandbox_FullMethodName = "/worker.v1.WorkerService/CreateSandbox"
-	WorkerService_StopSandbox_FullMethodName   = "/worker.v1.WorkerService/StopSandbox"
-	WorkerService_RemoveSandbox_FullMethodName = "/worker.v1.WorkerService/RemoveSandbox"
-	WorkerService_GetWorkerInfo_FullMethodName = "/worker.v1.WorkerService/GetWorkerInfo"
+	WorkerService_CreateSandbox_FullMethodName        = "/worker.v1.WorkerService/CreateSandbox"
+	WorkerService_StopSandbox_FullMethodName          = "/worker.v1.WorkerService/StopSandbox"
+	WorkerService_RemoveSandbox_FullMethodName        = "/worker.v1.WorkerService/RemoveSandbox"
+	WorkerService_ListRunningSandboxes_FullMethodName = "/worker.v1.WorkerService/ListRunningSandboxes"
+	WorkerService_GetWorkerInfo_FullMethodName        = "/worker.v1.WorkerService/GetWorkerInfo"
 )
 
 // WorkerServiceClient is the client API for WorkerService service.
@@ -32,6 +33,7 @@ type WorkerServiceClient interface {
 	CreateSandbox(ctx context.Context, in *CreateSandboxRequest, opts ...grpc.CallOption) (*CreateSandboxResponse, error)
 	StopSandbox(ctx context.Context, in *StopSandboxRequest, opts ...grpc.CallOption) (*StopSandboxResponse, error)
 	RemoveSandbox(ctx context.Context, in *RemoveSandboxRequest, opts ...grpc.CallOption) (*RemoveSandboxResponse, error)
+	ListRunningSandboxes(ctx context.Context, in *ListRunningSandboxesRequest, opts ...grpc.CallOption) (*ListRunningSandboxesResponse, error)
 	GetWorkerInfo(ctx context.Context, in *GetWorkerInfoRequest, opts ...grpc.CallOption) (*GetWorkerInfoResponse, error)
 }
 
@@ -73,6 +75,16 @@ func (c *workerServiceClient) RemoveSandbox(ctx context.Context, in *RemoveSandb
 	return out, nil
 }
 
+func (c *workerServiceClient) ListRunningSandboxes(ctx context.Context, in *ListRunningSandboxesRequest, opts ...grpc.CallOption) (*ListRunningSandboxesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListRunningSandboxesResponse)
+	err := c.cc.Invoke(ctx, WorkerService_ListRunningSandboxes_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *workerServiceClient) GetWorkerInfo(ctx context.Context, in *GetWorkerInfoRequest, opts ...grpc.CallOption) (*GetWorkerInfoResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetWorkerInfoResponse)
@@ -90,6 +102,7 @@ type WorkerServiceServer interface {
 	CreateSandbox(context.Context, *CreateSandboxRequest) (*CreateSandboxResponse, error)
 	StopSandbox(context.Context, *StopSandboxRequest) (*StopSandboxResponse, error)
 	RemoveSandbox(context.Context, *RemoveSandboxRequest) (*RemoveSandboxResponse, error)
+	ListRunningSandboxes(context.Context, *ListRunningSandboxesRequest) (*ListRunningSandboxesResponse, error)
 	GetWorkerInfo(context.Context, *GetWorkerInfoRequest) (*GetWorkerInfoResponse, error)
 	mustEmbedUnimplementedWorkerServiceServer()
 }
@@ -109,6 +122,9 @@ func (UnimplementedWorkerServiceServer) StopSandbox(context.Context, *StopSandbo
 }
 func (UnimplementedWorkerServiceServer) RemoveSandbox(context.Context, *RemoveSandboxRequest) (*RemoveSandboxResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RemoveSandbox not implemented")
+}
+func (UnimplementedWorkerServiceServer) ListRunningSandboxes(context.Context, *ListRunningSandboxesRequest) (*ListRunningSandboxesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListRunningSandboxes not implemented")
 }
 func (UnimplementedWorkerServiceServer) GetWorkerInfo(context.Context, *GetWorkerInfoRequest) (*GetWorkerInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetWorkerInfo not implemented")
@@ -188,6 +204,24 @@ func _WorkerService_RemoveSandbox_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WorkerService_ListRunningSandboxes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListRunningSandboxesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerServiceServer).ListRunningSandboxes(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerService_ListRunningSandboxes_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerServiceServer).ListRunningSandboxes(ctx, req.(*ListRunningSandboxesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _WorkerService_GetWorkerInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetWorkerInfoRequest)
 	if err := dec(in); err != nil {
@@ -224,6 +258,10 @@ var WorkerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RemoveSandbox",
 			Handler:    _WorkerService_RemoveSandbox_Handler,
+		},
+		{
+			MethodName: "ListRunningSandboxes",
+			Handler:    _WorkerService_ListRunningSandboxes_Handler,
 		},
 		{
 			MethodName: "GetWorkerInfo",

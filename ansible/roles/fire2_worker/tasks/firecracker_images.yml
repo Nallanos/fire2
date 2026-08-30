@@ -1,0 +1,36 @@
+---
+# Fetches the golden kernel + rootfs images shared by every sandbox VM this
+# worker starts. Skipped entirely (not an error) while
+# firecracker_kernel_url/firecracker_rootfs_url are unset — lets the rest of
+# the role keep working before a real object-storage bucket exists.
+#
+# NOTE: these are read-only templates. runtime.Client must copy the rootfs
+# to a per-sandbox file before mounting it — never point path_on_host at
+# this file directly, or concurrent VMs will corrupt each other's writes.
+
+- name: Create Firecracker images directory
+  ansible.builtin.file:
+    path: "{{ firecracker_images_dir }}"
+    state: directory
+    owner: "{{ fire2_user }}"
+    group: "{{ fire2_group }}"
+    mode: "0755"
+  when: firecracker_kernel_url | length > 0 or firecracker_rootfs_url | length > 0
+
+- name: Fetch golden kernel image
+  ansible.builtin.get_url:
+    url: "{{ firecracker_kernel_url }}"
+    dest: "{{ firecracker_images_dir }}/vmlinux"
+    owner: "{{ fire2_user }}"
+    group: "{{ fire2_group }}"
+    mode: "0644"
+  when: firecracker_kernel_url | length > 0
+
+- name: Fetch golden rootfs image
+  ansible.builtin.get_url:
+    url: "{{ firecracker_rootfs_url }}"
+    dest: "{{ firecracker_images_dir }}/rootfs.ext4"
+    owner: "{{ fire2_user }}"
+    group: "{{ fire2_group }}"
+    mode: "0644"
+  when: firecracker_rootfs_url | length > 0

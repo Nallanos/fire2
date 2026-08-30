@@ -9,6 +9,12 @@ type Config struct {
 	Port                 string
 	DatabaseURL          string
 	OrchestratorGRPCPort string
+	// OrchestratorGRPCBindHost restricts the gRPC listener to a single
+	// interface (e.g. a Tailscale IP) instead of all interfaces. Empty means
+	// bind everywhere — the local-dev default. gRPC uses insecure
+	// credentials, so in a multi-host deployment this must be a private
+	// address, never a public one.
+	OrchestratorGRPCBindHost string
 	// SandboxWaitTimeout overrides the 45-second default in the createSandbox
 	// handler. Zero means use the default. Intended for tests.
 	SandboxWaitTimeout time.Duration
@@ -41,11 +47,12 @@ func ConfigFromEnv() Config {
 	}
 
 	return Config{
-		Port:                 port,
-		DatabaseURL:          databaseURL,
-		OrchestratorGRPCPort: orchestratorGRPCPort,
-		HeartbeatTimeout:     durationFromEnv("HEARTBEAT_TIMEOUT", defaultHeartbeatTimeout),
-		ReaperInterval:       durationFromEnv("REAPER_INTERVAL", defaultReaperInterval),
+		Port:                     port,
+		DatabaseURL:              databaseURL,
+		OrchestratorGRPCPort:     orchestratorGRPCPort,
+		OrchestratorGRPCBindHost: os.Getenv("ORCHESTRATOR_GRPC_BIND_HOST"),
+		HeartbeatTimeout:         durationFromEnv("HEARTBEAT_TIMEOUT", defaultHeartbeatTimeout),
+		ReaperInterval:           durationFromEnv("REAPER_INTERVAL", defaultReaperInterval),
 	}
 }
 

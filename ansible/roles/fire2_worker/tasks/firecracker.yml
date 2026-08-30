@@ -1,0 +1,41 @@
+---
+# Installs the Firecracker + jailer binaries, pinned to firecracker_version
+# with an official sha256 checksum (see defaults/main.yml). get_url is
+# idempotent by checksum: re-running this task is a no-op once the pinned
+# binary is already in place.
+
+- name: Download Firecracker release tarball
+  ansible.builtin.get_url:
+    url: "https://github.com/firecracker-microvm/firecracker/releases/download/v{{ firecracker_version }}/firecracker-v{{ firecracker_version }}-x86_64.tgz"
+    dest: "/tmp/firecracker-v{{ firecracker_version }}-x86_64.tgz"
+    checksum: "{{ firecracker_checksum_x86_64 }}"
+    mode: "0644"
+
+- name: Extract Firecracker release tarball
+  ansible.builtin.unarchive:
+    src: "/tmp/firecracker-v{{ firecracker_version }}-x86_64.tgz"
+    dest: /tmp
+    remote_src: true
+    creates: "/tmp/release-v{{ firecracker_version }}-x86_64/firecracker-v{{ firecracker_version }}-x86_64"
+
+- name: Install firecracker binary
+  ansible.builtin.copy:
+    src: "/tmp/release-v{{ firecracker_version }}-x86_64/firecracker-v{{ firecracker_version }}-x86_64"
+    dest: "{{ firecracker_install_dir }}/firecracker"
+    remote_src: true
+    mode: "0755"
+
+- name: Install jailer binary
+  ansible.builtin.copy:
+    src: "/tmp/release-v{{ firecracker_version }}-x86_64/jailer-v{{ firecracker_version }}-x86_64"
+    dest: "{{ firecracker_install_dir }}/jailer"
+    remote_src: true
+    mode: "0755"
+
+- name: Create Firecracker per-VM sandbox directory
+  ansible.builtin.file:
+    path: "{{ firecracker_sandbox_dir }}"
+    state: directory
+    owner: "{{ fire2_user }}"
+    group: "{{ fire2_group }}"
+    mode: "0755"

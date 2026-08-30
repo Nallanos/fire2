@@ -26,4 +26,7 @@ type Sandbox struct {
 	PreviewURL string    `json:"preview_url"`
 	Image      string    `json:"image"`
 	WorkerID   *string   `json:"worker_id"`
+	VcpuCount  int32     `json:"vcpu_count"`
+	MemSizeMib int32     `json:"mem_size_mib"`
+	UserID     *string   `json:"user_id"`
 }

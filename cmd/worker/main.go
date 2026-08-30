@@ -8,6 +8,7 @@ import (
 
 	"github/nallanos/fire2/internal/packages/docker"
 	"github/nallanos/fire2/internal/packages/orchestrator"
+	runtimeClient "github/nallanos/fire2/internal/packages/runtime"
 	workerpkg "github/nallanos/fire2/internal/packages/worker"
 )
 
@@ -31,6 +32,12 @@ func main() {
 	}
 	advertisedHost := os.Getenv("WORKER_ADVERTISED_HOST")
 
+	// Restricts the gRPC listener to a single interface (e.g. a Tailscale
+	// IP) instead of all interfaces. Empty means bind everywhere — the
+	// local-dev default. gRPC uses insecure credentials, so in a
+	// multi-host deployment this must be a private address, never public.
+	grpcBindHost := os.Getenv("WORKER_GRPC_BIND_HOST")
+
 	cpuBudget, _ := strconv.Atoi(os.Getenv("WORKER_CPU_BUDGET"))
 	memBudget, _ := strconv.Atoi(os.Getenv("WORKER_MEM_BUDGET"))
 
@@ -39,6 +46,14 @@ func main() {
 	dockerClient, err := docker.NewClient()
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	// Firecracker keeps no state of its own across restarts — kill any VM
+	// left running by a previous crash/redeploy of this worker and clean up
+	// its socket/directory. The orchestrator's retry policy re-creates the
+	// sandbox; this just guarantees a clean slate for that retry.
+	if err := runtimeClient.ReapOrphans(runtimeClient.SandboxBaseDir()); err != nil {
+		log.Printf("reap orphaned sandboxes: %v", err)
 	}
 
 	eventClient, err := orchestrator.NewEventClient(ctx, orchestratorAddr)
@@ -55,7 +70,7 @@ func main() {
 	reporter := workerpkg.NewEventReporter(dockerClient, eventClient.Client(), workerID)
 	go reporter.Run(context.Background())
 
-	if err := workerpkg.ServeGRPC(":"+workerPort, workerGRPCServer); err != nil {
+	if err := workerpkg.ServeGRPC(grpcBindHost+":"+workerPort, workerGRPCServer); err != nil {
 		log.Fatal(err)
 	}
 }

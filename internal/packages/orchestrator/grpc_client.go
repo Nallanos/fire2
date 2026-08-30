@@ -49,6 +49,10 @@ func (c *Client) GetWorkerInfo(ctx context.Context, req *workerv1.GetWorkerInfoR
 	return c.worker.GetWorkerInfo(ctx, req)
 }
 
+func (c *Client) ListRunningSandboxes(ctx context.Context, req *workerv1.ListRunningSandboxesRequest) (*workerv1.ListRunningSandboxesResponse, error) {
+	return c.worker.ListRunningSandboxes(ctx, req)
+}
+
 func CreateSandboxOnLeastUsedWorker(ctx context.Context, workers []workerpkg.Worker, req *workerv1.CreateSandboxRequest) (*workerv1.CreateSandboxResponse, error) {
 	return CreateSandboxOnLeastUsedWorkerWithScheduler(ctx, NewScheduler(), workers, req)
 }
