@@ -16,17 +16,17 @@ Un agent qui écrit du code doit pouvoir l'exécuter. Aujourd'hui il y a trois o
 
 * Sandbox — l'objet métier : un environnement demandé par un utilisateur, avec un cycle de vie et un propriétaire. Persisté en base.
 * Micro-VM — l'exécution Firecracker qui matérialise une sandbox sur un worker.
-* Worker — une machine de la flotte, qui fait tourner plusieurs micro-VM.
+* [[Worker]] — une machine de la flotte, qui fait tourner plusieurs micro-VM.
 
 ## Les responsabilités
 
-* L'orchestrateur choisit le worker sur lequel la micro-VM tournera, crée le job de création, l'observe, et garde la base à jour et vraie.
-* Le worker exécute les requêtes de l'orchestrateur. C'est ici que vit la logique de création de micro-VM.
+* L'[[Orchestrateur]] choisit le worker sur lequel la micro-VM tournera, crée le job de création, l'observe, et garde la base à jour et vraie.
+* Le [[Worker]] exécute les requêtes de l'[[Orchestrateur]]. C'est ici que vit la logique de création de micro-VM.
 * La base de données est la source de vérité et porte la file de jobs.
 * L'authentification décide à qui appartient une sandbox.
 * Le réseau garde le gRPC hors de l'internet public et isole les sandboxes du réseau interne.
 
-Les trois dernières sont détaillées dans le document d'architecture.
+Les trois dernières sont détaillées dans le document [[Architecture]].
 
 ## Les contraintes
 
@@ -56,6 +56,6 @@ Fire est opinionné là où ils refusent de l'être. Un modèle réseau, un mod�
 
 ## Les documents
 
-* Architecture — mes choix techniques et pourquoi. Le point d'entrée pour comprendre le projet en profondeur.
-* Orchestrateur
-* Worker
+* [[Architecture]] — mes choix techniques et pourquoi. Le point d'entrée pour comprendre le projet en profondeur.
+* [[Orchestrateur]]
+* [[Worker]]
