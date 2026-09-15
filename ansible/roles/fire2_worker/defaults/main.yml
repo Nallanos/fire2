@@ -21,15 +21,13 @@ worker_mem_budget: 3000
 # registers as a distinct worker row in the DB.
 worker_id: "{{ ansible_hostname }}"
 
-# Address the orchestrator dials to reach this worker over gRPC.
-# Defaults to the primary (public) interface IP auto-detected by Ansible —
-# override in group_vars/workers.yml with the Tailscale IP once the host has
-# joined the tailnet, so gRPC (insecure credentials) never crosses the
-# public internet.
-worker_advertised_host: "{{ ansible_default_ipv4.address }}"
-
-# Restricts the worker's gRPC listener to a single interface. Empty (default)
-# binds all interfaces — fine for local dev, NOT for a host with a public IP.
+# Left empty by default: the worker binary auto-discovers its own Tailscale
+# IP at startup (`tailscale ip -4`, see cmd/worker/main.go) and uses it for
+# both the advertised address and the gRPC bind host. A static IP here goes
+# stale the moment a host is rebuilt or moved to a new provider — that's
+# exactly what caused the Oracle-migration crash loop. Only set these if you
+# need to override the auto-discovered value for a specific host.
+worker_advertised_host: ""
 worker_grpc_bind_host: ""
 
 # --- Firecracker ---

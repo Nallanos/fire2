@@ -1,8 +1,8 @@
 ---
-- name: Deploy fire2 worker
-  hosts: workers
+- name: Deploy fire2 orchestrator API
+  hosts: orchestrator
   become: true
   vars:
     ansible_python_interpreter: /usr/bin/python3
   roles:
-    - fire2_worker
+    - fire2_orchestrator

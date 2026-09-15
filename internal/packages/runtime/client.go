@@ -12,6 +12,7 @@ import (
 
 type Client struct {
 	socketPath string
+	sandboxId  string
 	machine    *firecracker.Machine
 	Dir        string
 }
@@ -45,6 +46,7 @@ func NewClient(sandboxId string) (*Client, error) {
 		return nil, fmt.Errorf("create sandbox dir: %w", err)
 	}
 	return &Client{
+		sandboxId:  sandboxId,
 		socketPath: filepath.Join(dir, "firecracker.sock"),
 		Dir:        dir,
 	}, nil

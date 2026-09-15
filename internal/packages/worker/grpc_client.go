@@ -101,12 +101,14 @@ func ServeGRPC(address string, srv workerv1.WorkerServiceServer, opts ...grpc.Se
 	grpcServer := grpc.NewServer(opts...)
 	workerv1.RegisterWorkerServiceServer(grpcServer, srv)
 
+	log.Printf("worker gRPC server started on %s", lis.Addr().String())
 	if workerSrv, ok := srv.(*WorkerGRPCServer); ok {
 		workerSrv.service.SetListenPort(boundPort)
 
 		heartbeatCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
+		log.Printf("starting heartbeat loop with interval: %s", heartbeatIntervalFromEnv())
 		go workerSrv.service.RunHeartbeat(heartbeatCtx, heartbeatIntervalFromEnv())
 		return grpcServer.Serve(lis)
 	}

@@ -1,12 +1,12 @@
 ---
-# Installs Tailscale so this worker's gRPC listener can bind to a private
-# tailnet IP instead of its public interface. Installation is automated;
-# joining the tailnet needs a pre-generated authkey (tailscale_authkey — see
-# group_vars/all.yml, shared by every host, read from the TAILSCALE_AUTHKEY
-# env var). Without
-# one, this task installs the client and stops there, requiring a manual
-# `tailscale up`. cmd/worker auto-discovers the joined IP at startup, so no
-# further config is needed once the host is on the tailnet.
+# Installs Tailscale so this orchestrator's gRPC listener can bind to a
+# private tailnet IP instead of its public interface — same reasoning as
+# roles/fire2_worker/tasks/tailscale.yml, duplicated here rather than
+# shared since it's ~15 lines. Joining the tailnet needs a pre-generated
+# authkey (tailscale_authkey — see group_vars/all.yml, shared by every
+# host, read from the TAILSCALE_AUTHKEY env var). The api binary
+# auto-discovers the joined IP at startup, so no further config is needed
+# once the host is on the tailnet.
 
 - name: Check whether Tailscale is already installed
   ansible.builtin.command: which tailscale

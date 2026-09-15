@@ -4,14 +4,13 @@ import (
 	"time"
 
 	orchestratorv1 "github/nallanos/fire2/gen/orchestrator/v1"
-	"github/nallanos/fire2/internal/packages/docker"
 	runtimeClient "github/nallanos/fire2/internal/packages/runtime"
 )
 
 const defaultHeartbeatInterval = 5 * time.Second
 const heartbeatRequestTimeout = 3 * time.Second
 
-func NewWorkerService(dockerClient docker.ClientInterface, orchestratorClient orchestratorv1.OrchestratorServiceClient) *WorkerService {
+func NewWorkerService(orchestratorClient orchestratorv1.OrchestratorServiceClient) *WorkerService {
 	return &WorkerService{
 		orchestratorClient: orchestratorClient,
 		runningSandboxes:   make(map[string]*runtimeClient.Client),

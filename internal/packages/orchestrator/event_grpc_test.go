@@ -46,22 +46,26 @@ func sandboxStatus(t *testing.T, ctx context.Context, repo sandboxpkg.Repository
 	return sbx.Status
 }
 
-func ingestEvent(t *testing.T, ctx context.Context, srv *EventGRPCServer, sandboxID, action string) {
+func ingestEvent(t *testing.T, ctx context.Context, srv *EventGRPCServer, sandboxID, state string) {
 	t.Helper()
 	_, err := srv.IngestSandboxEvent(ctx, &orchestratorv1.SandboxEvent{
-		SandboxId:   sandboxID,
-		ContainerId: "ctr-" + sandboxID,
-		WorkerId:    "wk-test",
-		EventType:   "container",
-		Action:      action,
+		SandboxId: sandboxID,
+		WorkerId:  "wk-test",
+		State:     state,
 	})
 	if err != nil {
-		t.Fatalf("IngestSandboxEvent action=%s: %v", action, err)
+		t.Fatalf("IngestSandboxEvent state=%s: %v", state, err)
 	}
 }
 
 // H1: die event while status=pending → status unchanged, "ignored" logged.
+//
+// Skipped: statusTransitionForState has no failure state anymore (see its
+// doc comment) — firecracker-go-sdk's InstanceInfo.State never reports
+// "died"/"crashed" the way Docker's die/kill/oom did, so there's nothing
+// left to guard here. Re-enable once a real failure signal exists.
 func TestEventGuard_DieWhilePending(t *testing.T) {
+	t.Skip("no Firecracker equivalent to Docker's die event — see statusTransitionForState")
 	ctx := context.Background()
 	pool := testutil.SetupPostgres(t, ctx)
 	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
@@ -86,7 +90,10 @@ func TestEventGuard_DieWhilePending(t *testing.T) {
 }
 
 // H2: die while scheduling → unchanged + logged.
+//
+// Skipped: see TestEventGuard_DieWhilePending.
 func TestEventGuard_DieWhileScheduling(t *testing.T) {
+	t.Skip("no Firecracker equivalent to Docker's die event — see statusTransitionForState")
 	ctx := context.Background()
 	pool := testutil.SetupPostgres(t, ctx)
 	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
@@ -111,7 +118,10 @@ func TestEventGuard_DieWhileScheduling(t *testing.T) {
 }
 
 // H3: die while assigned → unchanged + logged.
+//
+// Skipped: see TestEventGuard_DieWhilePending.
 func TestEventGuard_DieWhileAssigned(t *testing.T) {
+	t.Skip("no Firecracker equivalent to Docker's die event — see statusTransitionForState")
 	ctx := context.Background()
 	pool := testutil.SetupPostgres(t, ctx)
 	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
@@ -135,8 +145,8 @@ func TestEventGuard_DieWhileAssigned(t *testing.T) {
 	}
 }
 
-// H4: start event while starting → status becomes running, no log.
-func TestEventGuard_StartWhileStarting(t *testing.T) {
+// H4: Running state while starting → status becomes running, no log.
+func TestEventGuard_RunningWhileStarting(t *testing.T) {
 	ctx := context.Background()
 	pool := testutil.SetupPostgres(t, ctx)
 	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
@@ -150,18 +160,21 @@ func TestEventGuard_StartWhileStarting(t *testing.T) {
 	defer log.SetOutput(os.Stderr)
 
 	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo)
-	ingestEvent(t, ctx, srv, "sbx-h4", "start")
+	ingestEvent(t, ctx, srv, "sbx-h4", "Running")
 
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h4") != sandboxpkg.StatusRunning {
-		t.Fatalf("expected running after start event")
+		t.Fatalf("expected running after Running-state event")
 	}
 	if strings.Contains(buf.String(), "ignored sandbox event") {
-		t.Fatalf("unexpected 'ignored' log for valid start transition")
+		t.Fatalf("unexpected 'ignored' log for valid running transition")
 	}
 }
 
 // H5: die while running → status becomes failed.
+//
+// Skipped: see TestEventGuard_DieWhilePending.
 func TestEventGuard_DieWhileRunning(t *testing.T) {
+	t.Skip("no Firecracker equivalent to Docker's die event — see statusTransitionForState")
 	ctx := context.Background()
 	pool := testutil.SetupPostgres(t, ctx)
 	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
@@ -179,7 +192,10 @@ func TestEventGuard_DieWhileRunning(t *testing.T) {
 }
 
 // H6: die while already failed → unchanged + logged.
+//
+// Skipped: see TestEventGuard_DieWhilePending.
 func TestEventGuard_DieWhileFailed(t *testing.T) {
+	t.Skip("no Firecracker equivalent to Docker's die event — see statusTransitionForState")
 	ctx := context.Background()
 	pool := testutil.SetupPostgres(t, ctx)
 	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
@@ -205,7 +221,12 @@ func TestEventGuard_DieWhileFailed(t *testing.T) {
 
 // H7: out-of-order die before start → die is rejected (pending), start then accepted (running→failed never)
 // Simulates: sandbox in starting state, die arrives first (rejected), start arrives next (accepted).
+//
+// Skipped: the "die" half has no Firecracker equivalent (see
+// TestEventGuard_DieWhilePending). The "start"/Running half alone is
+// already covered by TestEventGuard_RunningWhileStarting.
 func TestEventGuard_OutOfOrder_DieBeforeStart(t *testing.T) {
+	t.Skip("no Firecracker equivalent to Docker's die event — see statusTransitionForState")
 	ctx := context.Background()
 	pool := testutil.SetupPostgres(t, ctx)
 	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
@@ -235,12 +256,12 @@ func TestEventGuard_OutOfOrder_DieBeforeStart(t *testing.T) {
 
 	// start arrives while starting → accepted
 	buf.Reset()
-	ingestEvent(t, ctx, srv, "sbx-h7", "start")
+	ingestEvent(t, ctx, srv, "sbx-h7", "Running")
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h7") != sandboxpkg.StatusRunning {
-		t.Fatalf("expected running after start event in starting state")
+		t.Fatalf("expected running after Running-state event in starting state")
 	}
 	if strings.Contains(buf.String(), "ignored sandbox event") {
-		t.Fatalf("start from starting should not be ignored")
+		t.Fatalf("running from starting should not be ignored")
 	}
 }
 

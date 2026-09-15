@@ -1,0 +1,10 @@
+---
+- name: reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+  notify: restart fire2-api
+
+- name: restart fire2-api
+  ansible.builtin.systemd:
+    name: fire2-api
+    state: restarted

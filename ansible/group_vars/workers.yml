@@ -1,27 +1,15 @@
 ---
-# Required — no defaults. Set these before running the playbook.
+# Required — no default. Set this before running the playbook.
 # Orchestrator's Tailscale IP (fire2-api node) — gRPC is insecure, so this
 # must be a private tailnet address, never the orchestrator's public IP.
 orchestrator_grpc_addr: "100.78.175.35:7001"
 
-# This worker's own Tailscale IP (fire2-worker node), from `tailscale ip -4`
-# on the host once it's joined the tailnet. Overrides the public-IP default
-# in defaults/main.yml so the orchestrator dials over the private network.
-worker_advertised_host: "100.126.129.111"
+# worker_advertised_host / worker_grpc_bind_host are intentionally NOT set
+# here — each worker's Tailscale IP is different and the binary
+# auto-discovers its own at startup (see defaults/main.yml). Setting a
+# single static IP here for the whole group is what caused the crash loop
+# after the Oracle migration: it only ever matched one host, and stayed
+# wrong forever once that host's IP changed.
 
-# Restrict the worker's gRPC listener to the tailnet interface — never
-# accept connections from the droplet's public interface.
-worker_grpc_bind_host: "100.126.129.111"
-
-# SSH key used to reach the worker VMs. Generated locally; the matching
-# public key must be added to each host's authorized_keys.
-ansible_ssh_private_key_file: ~/.ssh/fire2_worker_deploy
-
-# Golden Firecracker images, hosted publicly in a DigitalOcean Space.
-# NOTE: rootfs.ext4 here is still the bare-bones Alpine smoke-test image
-# (custom init that just prints a marker and halts) — good enough to prove
-# the ansible fetch + boot pipeline, NOT a production rootfs. It has no real
-# init system and none of the Node/Python/Go runtimes sandboxes need. Swap
-# this URL once a real rootfs is built.
-firecracker_kernel_url: "https://bucketfire.sfo3.digitaloceanspaces.com/vmlinux"
-firecracker_rootfs_url: "https://bucketfire.sfo3.digitaloceanspaces.com/rootfs.ext4"
+# tailscale_authkey moved to group_vars/all.yml — it's shared by every host
+# (workers and orchestrator alike), not just this group.

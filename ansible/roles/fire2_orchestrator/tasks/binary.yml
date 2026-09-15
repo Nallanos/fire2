@@ -1,0 +1,17 @@
+---
+- name: Create install directory
+  ansible.builtin.file:
+    path: "{{ fire2_install_dir }}"
+    state: directory
+    owner: "{{ fire2_user }}"
+    group: "{{ fire2_group }}"
+    mode: "0755"
+
+- name: Deploy orchestrator API binary
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../dist/api"
+    dest: "{{ fire2_install_dir }}/api"
+    owner: "{{ fire2_user }}"
+    group: "{{ fire2_group }}"
+    mode: "0755"
+  notify: restart fire2-api

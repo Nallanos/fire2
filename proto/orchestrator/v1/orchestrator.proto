@@ -27,11 +27,11 @@ message WorkerHeartbeat {
 message SandboxEvent {
   string id = 1;
   string sandbox_id = 2;
-  string container_id = 3;
+  reserved 3, 6, 7, 8;
+  reserved "container_id", "action", "actor_id", "attributes";
   string worker_id = 4;
-  string event_type = 5;
-  string action = 6;
-  string actor_id = 7;
-  map<string, string> attributes = 8;
+  // Instance state, matching firecracker-go-sdk's InstanceInfo.State
+  // ("Not started" | "Running" | "Paused").
+  string state = 5;
   google.protobuf.Timestamp occurred_at = 9;
 }
