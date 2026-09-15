@@ -3,11 +3,24 @@
 -include .env
 export
 
-.PHONY: sandbox-up sandbox-migrate sandbox-api sandbox-worker sandbox-smoke sandbox-flow sandbox-check-env sandbox-start sandbox-seed
+.PHONY: sandbox-up sandbox-migrate sandbox-api sandbox-worker sandbox-smoke sandbox-flow sandbox-check-env sandbox-start sandbox-seed sandbox-token
 
 SANDBOX_WORKERS ?= 2
 SANDBOX_WORKER_PORT_BASE ?= 50051
 SANDBOX_LOG_DIR ?= .sandbox
+
+# API_HOST is where sandbox-smoke/seed/list/ansible-smoke send their curls.
+# Defaults to the real prod orchestrator (MainDev) — override for local
+# testing, e.g. `make sandbox-list API_HOST=localhost:8081`. Each host gets
+# its own cached token file so a stale prod token never gets sent to local
+# (or vice versa) just because a file happened to already exist.
+PROD_API_HOST ?= 100.78.175.35:8081
+API_HOST ?= $(PROD_API_HOST)
+ifeq ($(API_HOST),$(PROD_API_HOST))
+SANDBOX_TOKEN_FILE ?= $(SANDBOX_LOG_DIR)/token-prod
+else
+SANDBOX_TOKEN_FILE ?= $(SANDBOX_LOG_DIR)/token-local
+endif
 
 sandbox-check-env:
 	@test -n "$$DATABASE_URL" || (echo "DATABASE_URL is required"; exit 1)
@@ -39,30 +52,53 @@ sandbox-start: sandbox-check-env
 		sleep 0.5; \
 	done; \
 	for i in $$(seq 0 $$(($$count - 1))); do \
-		port=$$(($$base_port + $$i)); \
-		echo "starting worker on $$port"; \
-		WORKER_PORT=$$port ORCHESTRATOR_GRPC_ADDR=$$grpc_addr \
-			nohup $(GO) run ./cmd/worker > $(SANDBOX_LOG_DIR)/worker-$$port.log 2>&1 & \
+		echo "starting worker"; \
+		nohup $(GO) run ./cmd/worker > $(SANDBOX_LOG_DIR)/worker.log 2>&1 & \
 	done
 	@echo "logs in $(SANDBOX_LOG_DIR)/"
 
-sandbox-smoke:
-	curl -sS -X POST http://localhost:$${PORT:-8081}/api/sandboxes \
+# sandbox-token issues (once, then caches) a non-expiring bearer token for
+# the sandbox-* curl targets below. Never used by the public API itself —
+# real logins always expire normally. Prod (the default) uses PROD_TOKEN
+# from .env, generated once via cmd/devtoken run directly on MainDev against
+# its own DATABASE_URL (see .env comment) — this machine has no DB access to
+# mint prod sessions itself. Local (API_HOST=localhost:8081) generates its
+# own token here via cmd/devtoken, same as before.
+sandbox-token:
+	@mkdir -p $(SANDBOX_LOG_DIR)
+	@if [ "$(API_HOST)" = "$(PROD_API_HOST)" ]; then \
+		test -n "$$PROD_TOKEN" || (echo "PROD_TOKEN is required in .env to call the prod API (API_HOST=$(API_HOST))"; exit 1); \
+		echo "$$PROD_TOKEN" > $(SANDBOX_TOKEN_FILE); \
+	else \
+		test -n "$$DATABASE_URL" || (echo "DATABASE_URL is required"; exit 1); \
+		test -s $(SANDBOX_TOKEN_FILE) || $(GO) run ./cmd/devtoken > $(SANDBOX_TOKEN_FILE); \
+	fi
+
+sandbox-smoke: sandbox-token
+	@echo "hitting API at $(API_HOST)"
+	curl -sS -X POST http://$(API_HOST)/api/sandboxes \
+		-H "Authorization: Bearer $$(cat $(SANDBOX_TOKEN_FILE))" \
 		-H 'Content-Type: application/json' \
 		-d '{"runtime":"node","ttl":3600}' | cat
-	curl -sS http://localhost:$${PORT:-8081}/api/sandboxes | cat
+	curl -sS http://$(API_HOST)/api/sandboxes \
+		-H "Authorization: Bearer $$(cat $(SANDBOX_TOKEN_FILE))" | cat
 
-sandbox-seed:
-	curl -sS -X POST http://localhost:$${PORT:-8081}/api/sandboxes \
+sandbox-seed: sandbox-token
+	@echo "hitting API at $(API_HOST)"
+	curl -sS -X POST http://$(API_HOST)/api/sandboxes \
+		-H "Authorization: Bearer $$(cat $(SANDBOX_TOKEN_FILE))" \
 		-H 'Content-Type: application/json' \
 		-d '{"runtime":"node","image":"node:20-alpine","ttl":3600}' | cat
-	curl -sS -X POST http://localhost:$${PORT:-8081}/api/sandboxes \
+	curl -sS -X POST http://$(API_HOST)/api/sandboxes \
+		-H "Authorization: Bearer $$(cat $(SANDBOX_TOKEN_FILE))" \
 		-H 'Content-Type: application/json' \
 		-d '{"runtime":"python","image":"python:3.12-alpine","ttl":3600}' | cat
-	curl -sS -X POST http://localhost:$${PORT:-8081}/api/sandboxes \
+	curl -sS -X POST http://$(API_HOST)/api/sandboxes \
+		-H "Authorization: Bearer $$(cat $(SANDBOX_TOKEN_FILE))" \
 		-H 'Content-Type: application/json' \
 		-d '{"runtime":"go","image":"golang:1.23-alpine","ttl":3600}' | cat
-	curl -sS http://localhost:$${PORT:-8081}/api/sandboxes | cat
+	curl -sS http://$(API_HOST)/api/sandboxes \
+		-H "Authorization: Bearer $$(cat $(SANDBOX_TOKEN_FILE))" | cat
 
 sandbox-flow:
 	@echo "Run these in order:"
@@ -70,3 +106,8 @@ sandbox-flow:
 	@echo "  2) make sandbox-migrate"
 	@echo "  3) make sandbox-start"
 	@echo "  4) make sandbox-seed"
+
+sandbox-list: sandbox-token
+	@echo "hitting API at $(API_HOST)"
+	curl -sS http://$(API_HOST)/api/sandboxes \
+		-H "Authorization: Bearer $$(cat $(SANDBOX_TOKEN_FILE))" | cat

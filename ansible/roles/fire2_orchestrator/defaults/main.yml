@@ -1,0 +1,17 @@
+---
+fire2_user: fire2
+fire2_group: fire2
+fire2_install_dir: /opt/fire2
+
+api_port: 8081
+orchestrator_grpc_port: 7001
+
+# Left empty: the api binary auto-discovers its own Tailscale IP at startup
+# (`tailscale ip -4`, see internal/app/config.go) and uses it to restrict
+# the gRPC listener to the tailnet interface. gRPC uses insecure
+# credentials — never let this fall back to a public interface. Only set
+# this to override the auto-discovered value for a specific host.
+orchestrator_grpc_bind_host: ""
+
+heartbeat_timeout: 15s
+reaper_interval: 10s

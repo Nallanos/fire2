@@ -1,0 +1,11 @@
+---
+- name: Validate required variables
+  ansible.builtin.assert:
+    that:
+      - orchestrator_database_url | length > 0
+    fail_msg: "orchestrator_database_url is not set — export PROD_DATABASE_URL in .env (see group_vars/orchestrator.yml)"
+
+- ansible.builtin.import_tasks: tailscale.yml
+- ansible.builtin.import_tasks: user.yml
+- ansible.builtin.import_tasks: binary.yml
+- ansible.builtin.import_tasks: systemd.yml

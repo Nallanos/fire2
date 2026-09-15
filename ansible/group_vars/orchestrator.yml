@@ -1,0 +1,6 @@
+---
+# Required — no default. Set this before running the playbook.
+# Read from the PROD_DATABASE_URL env var (same pattern as
+# TAILSCALE_AUTHKEY — put it in your local .env, which is gitignored).
+# Never commit a real value: this is the live prod Postgres password.
+orchestrator_database_url: "{{ lookup('env', 'PROD_DATABASE_URL') }}"

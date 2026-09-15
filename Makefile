@@ -28,7 +28,17 @@ run-worker:
 
 ANSIBLE_INVENTORY ?= ansible/inventory/hosts.yml
 ANSIBLE_PLAYBOOK  ?= ansible/playbook.yml
+ANSIBLE_CMD       ?= .venv/bin/ansible-playbook
 
+.PHONY: ansible-install
+ansible-install:
+	python3 -m virtualenv .venv
+	.venv/bin/pip install -r ansible/requirements.txt
+
+# ansible-build/ansible-deploy target the workers group (ansible/playbook.yml).
+# See orchestrator-build/orchestrator-deploy below for the API/orchestrator
+# layer — kept as separate targets so deploying one never silently redeploys
+# the other.
 .PHONY: ansible-build
 ansible-build:
 	@mkdir -p dist
@@ -37,17 +47,37 @@ ansible-build:
 
 .PHONY: ansible-deploy
 ansible-deploy:
-	ansible-playbook $(ANSIBLE_PLAYBOOK) -i $(ANSIBLE_INVENTORY)
+	$(ANSIBLE_CMD) $(ANSIBLE_PLAYBOOK) -i $(ANSIBLE_INVENTORY)
 
-# Smoke-test sandbox creation against a live API.
-# Set API_HOST in .env or override on the command line, e.g.:
-#   make ansible-smoke API_HOST=192.0.2.10:8081
+# Deploys the orchestrator API binary (ansible/roles/fire2_orchestrator) —
+# same cross-compile/scp/systemd pattern as the worker role. Needs
+# PROD_DATABASE_URL and TAILSCALE_AUTHKEY in .env, and a real
+# ansible_ssh_private_key_file for the orchestrator host in
+# ansible/inventory/hosts.yml (a placeholder is there until you fill it in).
+ORCHESTRATOR_PLAYBOOK ?= ansible/orchestrator-playbook.yml
+
+.PHONY: orchestrator-build
+orchestrator-build:
+	@mkdir -p dist
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o dist/api ./cmd/api
+	@echo "built: dist/api"
+
+.PHONY: orchestrator-deploy
+orchestrator-deploy:
+	$(ANSIBLE_CMD) $(ORCHESTRATOR_PLAYBOOK) -i $(ANSIBLE_INVENTORY)
+
+# Smoke-test sandbox creation against a live API. API_HOST defaults to prod
+# (see make/sandbox.mk) — override on the command line to hit local instead:
+#   make ansible-smoke API_HOST=localhost:8081
 .PHONY: ansible-smoke
-ansible-smoke:
-	curl -sS -X POST http://localhost:$(PORT)/api/sandboxes \
+ansible-smoke: sandbox-token
+	@echo "hitting API at $(API_HOST)"
+	curl -sS -X POST http://$(API_HOST)/api/sandboxes \
+		-H "Authorization: Bearer $$(cat $(SANDBOX_TOKEN_FILE))" \
 		-H 'Content-Type: application/json' \
 		-d '{"runtime":"node","ttl":3600}' | cat
-	curl -sS http://localhost:$(PORT)/api/sandboxes | cat
+	curl -sS http://$(API_HOST)/api/sandboxes \
+		-H "Authorization: Bearer $$(cat $(SANDBOX_TOKEN_FILE))" | cat
 
 # One-command real Firecracker boot test: builds cmd/firecracker-smoke for
 # linux/amd64, ships it to FC_HOST, runs it against whatever kernel/rootfs
