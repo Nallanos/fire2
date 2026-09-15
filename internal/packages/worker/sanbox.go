@@ -160,3 +160,16 @@ func (w *WorkerService) ListRunningSandboxes(ctx context.Context) []string {
 	}
 	return sandboxes
 }
+
+// RunningSandboxClients returns a snapshot of the currently tracked runtime
+// clients, keyed by sandbox ID. It's a copy, so the caller can range over it
+// (e.g. to poll each VM's instance info) without holding w.mu.
+func (w *WorkerService) RunningSandboxClients() map[string]*runtimeClient.Client {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make(map[string]*runtimeClient.Client, len(w.runningSandboxes))
+	for id, client := range w.runningSandboxes {
+		out[id] = client
+	}
+	return out
+}

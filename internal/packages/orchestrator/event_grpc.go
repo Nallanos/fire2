@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log"
 	"net"
@@ -35,7 +34,8 @@ func NewEventGRPCServer(sandboxRepo sandboxpkg.Repository, eventRepo EventReposi
 
 // IngestSandboxEvent stores a sandbox event and updates sandbox status.
 // State ownership: the create-sandbox job owns transitions pending→running.
-// Events own transitions starting→running and running/starting→failed only.
+// Events own transitions starting→running only — see statusTransitionForState
+// for why running/starting→failed isn't handled here anymore.
 func (s *EventGRPCServer) IngestSandboxEvent(ctx context.Context, req *orchestratorv1.SandboxEvent) (*emptypb.Empty, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "missing sandbox event")
@@ -53,48 +53,27 @@ func (s *EventGRPCServer) IngestSandboxEvent(ctx context.Context, req *orchestra
 
 	sandboxID := strings.TrimSpace(req.GetSandboxId())
 	if sandboxID == "" {
-		sandboxID = req.GetAttributes()["sandbox_id"]
-		if sandboxID == "" {
-			sandboxID = req.GetAttributes()["id"]
-		}
-	}
-	if sandboxID == "" {
 		return nil, status.Error(codes.InvalidArgument, "sandbox_id is required")
 	}
 
-	containerID := strings.TrimSpace(req.GetContainerId())
-	if containerID == "" {
-		containerID = strings.TrimSpace(req.GetActorId())
-	}
-
 	workerID := strings.TrimSpace(req.GetWorkerId())
-	eventType := strings.TrimSpace(req.GetEventType())
-	action := strings.TrimSpace(req.GetAction())
-	if containerID == "" || workerID == "" || eventType == "" || action == "" {
+	state := strings.TrimSpace(req.GetState())
+	if workerID == "" || state == "" {
 		return nil, status.Error(codes.InvalidArgument, "missing required fields")
 	}
 
-	attrsJSON, err := json.Marshal(req.GetAttributes())
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid attributes: %v", err)
-	}
-
-	_, err = s.eventRepo.CreateSandboxEvent(ctx, SandboxEvent{
-		ID:          eventID,
-		SandboxID:   sandboxID,
-		ContainerID: containerID,
-		WorkerID:    workerID,
-		EventType:   eventType,
-		Action:      action,
-		ActorID:     req.GetActorId(),
-		Attributes:  attrsJSON,
-		OccurredAt:  occurredAt,
+	_, err := s.eventRepo.CreateSandboxEvent(ctx, SandboxEvent{
+		ID:         eventID,
+		SandboxID:  sandboxID,
+		WorkerID:   workerID,
+		State:      state,
+		OccurredAt: occurredAt,
 	})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "store sandbox event: %v", err)
 	}
 
-	s.applyStatusFromAction(ctx, sandboxID, action)
+	s.applyStatusFromState(ctx, sandboxID, state)
 
 	return &emptypb.Empty{}, nil
 }
@@ -141,38 +120,39 @@ func (s *EventGRPCServer) ReportWorkerHeartbeat(ctx context.Context, req *orches
 	return &emptypb.Empty{}, nil
 }
 
-// applyStatusFromAction applies a guarded status update based on the Docker action.
-// Updates are only applied when the sandbox is in a state the event handler owns.
-// rowsAffected=0 means the guard rejected the update (sandbox in a state the job owns).
-func (s *EventGRPCServer) applyStatusFromAction(ctx context.Context, sandboxID, action string) {
-	target, allowedFrom, ok := statusTransitionForAction(action)
+// applyStatusFromState applies a guarded status update based on the reported
+// Firecracker instance state. Updates are only applied when the sandbox is in
+// a state the event handler owns. rowsAffected=0 means the guard rejected the
+// update (sandbox in a state the job owns).
+func (s *EventGRPCServer) applyStatusFromState(ctx context.Context, sandboxID, state string) {
+	target, allowedFrom, ok := statusTransitionForState(state)
 	if !ok {
 		return
 	}
 
 	_, n, err := s.sandboxRepo.UpdateStatus(ctx, sandboxID, target, allowedFrom...)
 	if err != nil {
-		log.Printf("update sandbox status failed: sandbox=%s action=%s err=%v", sandboxID, action, err)
+		log.Printf("update sandbox status failed: sandbox=%s state=%s err=%v", sandboxID, state, err)
 		return
 	}
 	if n == 0 {
-		log.Printf("ignored sandbox event: sandbox=%s action=%s — current status not in allowed set", sandboxID, action)
+		log.Printf("ignored sandbox event: sandbox=%s state=%s — current status not in allowed set", sandboxID, state)
 	}
 }
 
-// statusTransitionForAction returns the target status and the set of allowed
-// source statuses for a given Docker action. The create-sandbox job owns all
-// transitions before running; events only advance starting→running or
-// flip running/starting→failed.
-func statusTransitionForAction(action string) (sandboxpkg.Status, []sandboxpkg.Status, bool) {
-	switch strings.ToLower(strings.TrimSpace(action)) {
-	case "start":
+// statusTransitionForState returns the target status and the set of allowed
+// source statuses for a reported firecracker-go-sdk InstanceInfo.State value
+// ("Not started" | "Running" | "Paused"). The create-sandbox job owns all
+// transitions before running; events only advance starting→running.
+//
+// Unlike Docker's die/stop/kill/oom, InstanceInfo has no "crashed"/"exited"
+// state to drive a starting|running→failed transition — that signal doesn't
+// exist here anymore. Detecting a dead sandbox needs a different mechanism
+// (e.g. missed heartbeats), not this event stream.
+func statusTransitionForState(state string) (sandboxpkg.Status, []sandboxpkg.Status, bool) {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "running":
 		return sandboxpkg.StatusRunning, []sandboxpkg.Status{
-			sandboxpkg.StatusStarting,
-			sandboxpkg.StatusRunning,
-		}, true
-	case "die", "stop", "kill", "oom":
-		return sandboxpkg.StatusFailed, []sandboxpkg.Status{
 			sandboxpkg.StatusStarting,
 			sandboxpkg.StatusRunning,
 		}, true
