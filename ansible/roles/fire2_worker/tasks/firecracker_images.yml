@@ -4,9 +4,10 @@
 # firecracker_kernel_url/firecracker_rootfs_url are unset — lets the rest of
 # the role keep working before a real object-storage bucket exists.
 #
-# NOTE: these are read-only templates. runtime.Client must copy the rootfs
-# to a per-sandbox file before mounting it — never point path_on_host at
-# this file directly, or concurrent VMs will corrupt each other's writes.
+# NOTE: these are read-only templates — never point path_on_host at the
+# rootfs directly, or concurrent VMs will corrupt each other's writes.
+# thinpool.yml imports it into the dm-thin pool as the base volume that
+# per-sandbox volumes are snapshotted from (fire2-thin create).
 
 - name: Create Firecracker images directory
   ansible.builtin.file:

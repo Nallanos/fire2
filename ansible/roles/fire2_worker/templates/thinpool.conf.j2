@@ -1,0 +1,14 @@
+# Managed by Ansible (fire2_worker role). Sourced by fire2-thinpool-up,
+# fire2-thinpool-import-base and fire2-thin — the latter runs as root through
+# sudo, so this file must stay root-owned and not writable by fire2.
+POOL_NAME={{ thinpool_name }}
+POOL_DIR={{ thinpool_dir }}
+DATA_SIZE={{ thinpool_data_size }}
+METADATA_SIZE={{ thinpool_metadata_size }}
+BLOCK_SECTORS={{ thinpool_block_size_sectors }}
+LOW_WATER_MARK={{ thinpool_low_water_mark_blocks }}
+BASE_IMAGE={{ firecracker_images_dir }}/rootfs.ext4
+
+# Thin volume IDs are 24-bit. Base volumes use 1..999, sandbox volumes
+# FIRST_SANDBOX_ID and up: everything at or above it is disposable.
+FIRST_SANDBOX_ID=1000

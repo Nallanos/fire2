@@ -10,5 +10,6 @@
 - ansible.builtin.import_tasks: user.yml
 - ansible.builtin.import_tasks: firecracker.yml
 - ansible.builtin.import_tasks: firecracker_images.yml
+- ansible.builtin.import_tasks: thinpool.yml
 - ansible.builtin.import_tasks: binary.yml
 - ansible.builtin.import_tasks: systemd.yml
