@@ -1,0 +1,4 @@
+# Managed by Ansible (fire2_worker role).
+# The worker runs as {{ fire2_user }} but device-mapper needs root. The only
+# privileged operation it gets is fire2-thin: create/remove fire2-sb-* volumes.
+{{ fire2_user }} ALL=(root) NOPASSWD: /usr/local/sbin/fire2-thin

@@ -1,0 +1,5 @@
+# Managed by Ansible (fire2_worker role).
+# Sandbox root drives (created by fire2-thin as root) must be openable by
+# Firecracker, which runs as {{ fire2_user }}. 12-: right after 10-dm.rules
+# sets DM_NAME; ":=" so the later generic GROUP="disk" can't override it.
+SUBSYSTEM=="block", ENV{DM_NAME}=="fire2-sb-*", OWNER:="{{ fire2_user }}", GROUP:="{{ fire2_group }}", MODE:="0660"

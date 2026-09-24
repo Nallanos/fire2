@@ -53,3 +53,22 @@ firecracker_images_dir: "{{ fire2_install_dir }}/firecracker/images"
 # by fire2. Read by the worker as FIRECRACKER_SANDBOX_DIR; the Go default
 # (/tmp) is only meant for local dev.
 firecracker_sandbox_dir: "{{ fire2_install_dir }}/firecracker/sandboxes"
+
+# --- dm-thin pool (sandbox root drives) ---
+# See tasks/thinpool.yml. The pool is backed by two sparse files attached as
+# loop devices: they only take real host disk space as sandboxes write, so
+# the host filesystem must actually have room for what the pool hands out.
+thinpool_name: fire2-pool
+thinpool_dir: /var/lib/fire2/thinpool
+# Only ever grows, and only on the pool's next activation (i.e. next boot):
+# fire2-thinpool-up is a no-op while the pool is up.
+thinpool_data_size: 20G
+# Fixed once the pool exists. 256M covers ~400 GB of data at 64 KiB blocks
+# (thin_metadata_size -b 64k -s <data size> -m 1000 -u m to re-check).
+thinpool_metadata_size: 256M
+# In 512-byte sectors: 128 = 64 KiB. A guest write that only partly covers a
+# block shared with the base copies the whole block first, so bigger blocks
+# make first writes slower; smaller ones make the metadata bigger.
+thinpool_block_size_sectors: 128
+# In blocks (32768 x 64 KiB = 2 GiB free). Only raises a device-mapper event.
+thinpool_low_water_mark_blocks: 32768

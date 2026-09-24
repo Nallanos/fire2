@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Imports BASE_IMAGE (rootfs.ext4) into the pool as the base volume every
+# sandbox volume is snapshotted from, and records it in $POOL_DIR/base.env for
+# fire2-thin. Run by Ansible after fetching the image.
+#
+# No-op when the base already holds this exact image (by sha256). Prints
+# "imported" or "unchanged" — Ansible's changed_when keys on it.
+set -euo pipefail
+# shellcheck source=/dev/null
+source /etc/fire2/thinpool.conf
+
+POOL=/dev/mapper/$POOL_NAME
+STATE=$POOL_DIR/base.env
+IMPORT_DEV=fire2-base-import
+
+BASE_THIN_ID=""
+BASE_SHA256=""
+# shellcheck source=/dev/null
+[[ -f $STATE ]] && source "$STATE"
+
+sha=$(sha256sum "$BASE_IMAGE" | cut -d' ' -f1)
+if [[ $sha == "$BASE_SHA256" ]]; then
+	echo unchanged
+	exit 0
+fi
+
+size=$(stat -c %s "$BASE_IMAGE")
+if ((size % 512 != 0)); then
+	echo "fire2-thinpool-import-base: $BASE_IMAGE size ($size) is not a multiple of 512" >&2
+	exit 1
+fi
+sectors=$((size / 512))
+
+# Base IDs cycle through 1..FIRST_SANDBOX_ID-1, so the current base stays
+# intact (and snapshottable) until the new one is complete.
+new_id=$((${BASE_THIN_ID:-0} % (FIRST_SANDBOX_ID - 1) + 1))
+
+# Leftovers from an interrupted run.
+dmsetup remove --retry "$IMPORT_DEV" 2>/dev/null || true
+dmsetup message "$POOL" 0 "delete $new_id" 2>/dev/null || true
+
+dmsetup message "$POOL" 0 "create_thin $new_id"
+trap 'dmsetup remove --retry "$IMPORT_DEV" 2>/dev/null || true' EXIT
+dmsetup create "$IMPORT_DEV" --table "0 $sectors thin $POOL $new_id"
+# A fresh thin volume reads as zeros, so all-zero blocks are skipped rather
+# than written: they would only take pool space. bs = pool block size so
+# every fully-zero block is skipped.
+dd if="$BASE_IMAGE" of="/dev/mapper/$IMPORT_DEV" bs=$((BLOCK_SECTORS * 512)) conv=sparse,fsync status=none
+# The base must stay inactive: snapshotting an active origin without
+# suspending it can corrupt the snapshot.
+dmsetup remove --retry "$IMPORT_DEV"
+
+tmp=$(mktemp "$POOL_DIR/base.env.XXXXXX")
+printf 'BASE_THIN_ID=%s\nBASE_SECTORS=%s\nBASE_SHA256=%s\n' "$new_id" "$sectors" "$sha" >"$tmp"
+mv -f "$tmp" "$STATE"
+
+# Sandbox volumes already snapshotted from the old base keep working: a
+# dm-thin snapshot doesn't depend on its origin. A fire2-thin create racing
+# this swap fails on the deleted ID and the orchestrator's retry lands on the
+# new base.
+if [[ -n $BASE_THIN_ID ]]; then
+	dmsetup message "$POOL" 0 "delete $BASE_THIN_ID"
+fi
+echo imported

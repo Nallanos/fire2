@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Creates / removes a sandbox's root drive: a dm-thin snapshot of the base
+# volume, exposed as /dev/mapper/fire2-sb-<sandbox-id>.
+#
+#   fire2-thin create <sandbox-id>   prints the block device to give Firecracker
+#   fire2-thin remove <sandbox-id>   idempotent; stop the VM first
+#
+# The worker runs as fire2 and calls this through sudo (/etc/sudoers.d/
+# fire2-thin): device-mapper needs root. Deliberately narrow — it can only
+# touch fire2-sb-* volumes, where `sudo dmsetup` could map any disk.
+set -euo pipefail
+# shellcheck source=/dev/null
+source /etc/fire2/thinpool.conf
+
+POOL=/dev/mapper/$POOL_NAME
+MAX_THIN_ID=$(((1 << 24) - 1))
+
+die() {
+	echo "fire2-thin: $*" >&2
+	exit 1
+}
+
+[[ $# -eq 2 ]] || die "usage: fire2-thin create|remove <sandbox-id>"
+[[ $2 =~ ^[A-Za-z0-9_-]{1,64}$ ]] || die "invalid sandbox id: $2"
+name=fire2-sb-$2
+
+create() {
+	local id="" err
+	if dmsetup info "$name" &>/dev/null; then
+		die "$name already exists"
+	fi
+	# BASE_THIN_ID, BASE_SECTORS — written by fire2-thinpool-import-base.
+	# shellcheck source=/dev/null
+	source "$POOL_DIR/base.env"
+
+	# The kernel is the source of truth for which IDs are taken: pick one at
+	# random and retry on collision. Nothing to keep in sync, even with
+	# several workers sharing the pool.
+	for _ in {1..16}; do
+		id=$((FIRST_SANDBOX_ID + ((RANDOM << 15) | RANDOM) % (MAX_THIN_ID - FIRST_SANDBOX_ID + 1)))
+		if err=$(dmsetup message "$POOL" 0 "create_snap $id $BASE_THIN_ID" 2>&1); then
+			break
+		fi
+		[[ $err == *"File exists"* ]] || die "create_snap $id: $err"
+		id=""
+	done
+	[[ -n $id ]] || die "no free thin id after 16 attempts"
+
+	if ! err=$(dmsetup create "$name" --table "0 $BASE_SECTORS thin $POOL $id" 2>&1); then
+		dmsetup message "$POOL" 0 "delete $id" || true
+		die "activate $name: $err"
+	fi
+	echo "/dev/mapper/$name"
+}
+
+remove() {
+	local table target id
+	# Already gone: nothing to do.
+	table=$(dmsetup table "$name" 2>/dev/null) || return 0
+	# "<start> <length> thin <pool major:minor> <thin id>"
+	read -r _ _ target _ id _ <<<"$table"
+	if [[ $target != thin || ! $id =~ ^[0-9]+$ ]] || ((id < FIRST_SANDBOX_ID)); then
+		die "refusing to remove $name, unexpected table: $table"
+	fi
+	dmsetup remove --retry "$name"
+	dmsetup message "$POOL" 0 "delete $id"
+}
+
+case $1 in
+create) create ;;
+remove) remove ;;
+*) die "usage: fire2-thin create|remove <sandbox-id>" ;;
+esac
