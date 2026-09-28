@@ -13,3 +13,9 @@
 
 # Environment 
 .env
+
+# Local dev stack logs
+.sandbox/
+
+# macOS
+.DS_Store
