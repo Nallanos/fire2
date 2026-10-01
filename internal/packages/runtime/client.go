@@ -2,9 +2,12 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	firecracker "github.com/firecracker-microvm/firecracker-go-sdk"
 	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
@@ -18,8 +21,8 @@ type Client struct {
 }
 
 type CreateVmRequest struct {
-	KernelPath string
-	RootFSPath string
+	KernelPath   string
+	FireThinPath string
 
 	VcpuCount  int32
 	MemSizeMib int32
@@ -54,11 +57,11 @@ func NewClient(sandboxId string) (*Client, error) {
 
 // CreateMachine spawns a Firecracker process for this client's socket, configures
 // it (machine config, boot source, root drive). The machine is not started yet.
-func (c *Client) CreateMachine(ctx context.Context, req CreateVmRequest) error {
-	// copy root fs in the sandbox dir so we can mount it read-write
-	rootFSPath := filepath.Join(c.Dir, "rootfs.ext4")
-	if err := CopyFile(req.RootFSPath, rootFSPath); err != nil {
-		return fmt.Errorf("copy rootfs: %w", err)
+func (c *Client) CreateMachine(req CreateVmRequest) error {
+
+	sandboxVolumePath, err := CreateSandboxVolume(req.FireThinPath, c.sandboxId)
+	if err != nil {
+		return fmt.Errorf("create sandbox volume: %w", err)
 	}
 
 	// Defensive: a stale socket file left by a killed/crashed process would
@@ -76,7 +79,7 @@ func (c *Client) CreateMachine(ctx context.Context, req CreateVmRequest) error {
 		Drives: []models.Drive{
 			{
 				DriveID:      firecracker.String("rootfs"),
-				PathOnHost:   firecracker.String(rootFSPath),
+				PathOnHost:   firecracker.String(sandboxVolumePath),
 				IsRootDevice: firecracker.Bool(true),
 				IsReadOnly:   firecracker.Bool(false),
 			},
@@ -87,14 +90,6 @@ func (c *Client) CreateMachine(ctx context.Context, req CreateVmRequest) error {
 		},
 	}
 
-	// The SDK builds the Firecracker process with exec.CommandContext(ctx, ...)
-	// — the process is killed the instant ctx is Done. ctx here is the
-	// caller's (ultimately a gRPC request context), which is cancelled the
-	// moment CreateSandbox returns, i.e. almost immediately after the VM
-	// starts. Use context.Background() so the VM's process lifetime is
-	// independent of how long the request that created it took. See the
-	// same reasoning on Start below — the SDK has a second, separate
-	// context-tied kill switch there.
 	machine, err := firecracker.NewMachine(context.Background(), cfg)
 	if err != nil {
 		return fmt.Errorf("new machine: %w", err)
@@ -113,7 +108,7 @@ func (c *Client) CreateMachine(ctx context.Context, req CreateVmRequest) error {
 // as soon as the caller's request finishes. Stopping the VM is Client.Stop's
 // job, not something that should happen as a side effect of an unrelated
 // context expiring.
-func (c *Client) Start(ctx context.Context) error {
+func (c *Client) Start() error {
 	if c.machine == nil {
 		return fmt.Errorf("machine not created")
 	}
@@ -128,12 +123,42 @@ func (c *Client) Start(ctx context.Context) error {
 // ("don't return an error if the process isn't even running"). This keeps
 // Stop safe to call from a rollback path where CreateMachine may have failed
 // before the machine ever existed.
-func (c *Client) Stop(ctx context.Context) error {
+func (c *Client) Stop() error {
 	if c.machine == nil {
 		return nil
 	}
 	if err := c.machine.StopVMM(); err != nil {
 		return fmt.Errorf("stop machine: %w", err)
+	}
+	return nil
+}
+
+// CreateSandboxVolume creates a thin-provisioned volume for the sandbox
+// using the fire2-thin tool at fire2ThinPath. Returns the path to the
+// created device.
+func CreateSandboxVolume(fire2ThinPath, sandboxId string) (devicePath string, err error) {
+	out, err := exec.Command("sudo", fire2ThinPath, "create", sandboxId).Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if ok := errors.As(err, &exitErr); ok {
+			return "", fmt.Errorf("create sandbox volume: %s", strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return "", fmt.Errorf("create sandbox volume: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// RemoveSandboxVolume removes the thin-provisioned volume for the sandbox
+// using the fire2-thin tool at fire2ThinPath. Returns an error if the
+// removal fails.
+func RemoveSandboxVolume(fire2ThinPath, sandboxId string) error {
+	_, err := exec.Command("sudo", fire2ThinPath, "remove", sandboxId).Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if ok := errors.As(err, &exitErr); ok {
+			return fmt.Errorf("remove sandbox volume: %s", strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return fmt.Errorf("remove sandbox volume: %w", err)
 	}
 	return nil
 }

@@ -44,7 +44,7 @@ func (s *WorkerGRPCServer) CreateSandbox(ctx context.Context, req *workerv1.Crea
 }
 
 func (s *WorkerGRPCServer) StopSandbox(ctx context.Context, req *workerv1.StopSandboxRequest) (*workerv1.StopSandboxResponse, error) {
-	if err := s.service.StopSandbox(ctx, req.GetContainerId()); err != nil {
+	if err := s.service.StopSandbox(req.GetContainerId()); err != nil {
 		return nil, err
 	}
 

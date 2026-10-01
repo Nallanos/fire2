@@ -49,29 +49,31 @@ func (w *WorkerService) CreateSandbox(ctx context.Context, in CreateSandboxInput
 		return errors.New("FIRECRACKER_IMAGE_DIR environment variable is not set")
 	}
 
+	// get env variable for fire thin binary path
+	fireThinPath := os.Getenv("FIRE2_THIN_PATH")
+	if fireThinPath == "" {
+		return errors.New("FIRE2_THIN_PATH environment variable is not set")
+	}
+
 	// check if the image directory exists
 	if _, err := os.Stat(imageDir); os.IsNotExist(err) {
 		return errors.New("FIRECRACKER_IMAGE_DIR does not exist: " + imageDir)
 	}
 
-	rootfsPath := filepath.Join(imageDir, "rootfs.ext4")
 	kernelPath := filepath.Join(imageDir, "vmlinux")
 
-	// check if the rootfs and kernel files exist
-	if _, err := os.Stat(rootfsPath); os.IsNotExist(err) {
-		return errors.New("rootfs.ext4 does not exist in FIRECRACKER_IMAGE_DIR: " + rootfsPath)
-	}
+	// check if the kernel files exist
 	if _, err := os.Stat(kernelPath); os.IsNotExist(err) {
 		return errors.New("vmlinux does not exist in FIRECRACKER_IMAGE_DIR: " + kernelPath)
 	}
 
 	// Create machine
-	err = client.CreateMachine(ctx, runtimeClient.CreateVmRequest{
-		KernelPath: kernelPath,
-		RootFSPath: rootfsPath,
-		VcpuCount:  in.VcpuCount,
-		MemSizeMib: in.MemSizeMib,
-		BootArgs:   "console=ttyS0 reboot=k panic=1 pci=off",
+	err = client.CreateMachine(runtimeClient.CreateVmRequest{
+		FireThinPath: fireThinPath,
+		KernelPath:   kernelPath,
+		VcpuCount:    in.VcpuCount,
+		MemSizeMib:   in.MemSizeMib,
+		BootArgs:     "console=ttyS0 reboot=k panic=1 pci=off",
 	})
 
 	if err != nil {
@@ -79,21 +81,21 @@ func (w *WorkerService) CreateSandbox(ctx context.Context, in CreateSandboxInput
 	}
 
 	// Start machine
-	err = client.Start(ctx)
+	err = client.Start()
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func (w *WorkerService) StopSandbox(ctx context.Context, containerID string) error {
+func (w *WorkerService) StopSandbox(containerID string) error {
 	w.mu.Lock()
 	client := w.runningSandboxes[containerID]
 	if client == nil {
 		w.mu.Unlock()
 		return fmt.Errorf("sandbox not found")
 	}
-	if err := client.Stop(ctx); err != nil {
+	if err := client.Stop(); err != nil {
 		w.mu.Unlock()
 		return fmt.Errorf("failed to stop sandbox: %w", err)
 	}
@@ -132,9 +134,13 @@ func (w *WorkerService) RemoveSandbox(ctx context.Context, sandboxID string) err
 	// leaving the directory (and a possibly still-running process) behind
 	// forever is worse than a best-effort cleanup that reports the error.
 	// ReapOrphans catches anything this misses on the next worker restart.
-	stopErr := client.Stop(ctx)
+	stopErr := client.Stop()
 	if stopErr != nil {
 		log.Printf("remove sandbox %s: stop failed, cleaning up anyway: %v", sandboxID, stopErr)
+	}
+
+	if err := runtimeClient.RemoveSandboxVolume(os.Getenv("FIRE2_THIN_PATH"), sandboxID); err != nil {
+		log.Printf("remove sandbox %s: remove volume failed, cleaning up anyway: %v", sandboxID, err)
 	}
 
 	if err := os.RemoveAll(client.Dir); err != nil && !os.IsNotExist(err) {

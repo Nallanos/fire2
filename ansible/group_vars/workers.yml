@@ -13,3 +13,14 @@ orchestrator_grpc_addr: "100.78.175.35:7001"
 
 # tailscale_authkey moved to group_vars/all.yml — it's shared by every host
 # (workers and orchestrator alike), not just this group.
+
+# Golden kernel/rootfs for every sandbox VM (roles/fire2_worker/tasks/firecracker_images.yml).
+# Read from env vars, never committed — this Oracle Object Storage PAR grants
+# read+write on the bucket, so it's a real credential, not just a link.
+# Same pattern as TAILSCALE_AUTHKEY/PROD_DATABASE_URL: put the values in your
+# local .env (gitignored).
+firecracker_kernel_url: "{{ lookup('env', 'FIRECRACKER_KERNEL_URL') }}"
+firecracker_rootfs_url: "{{ lookup('env', 'FIRECRACKER_ROOTFS_URL') }}"
+# Not secrets: sha256 of the images, so a present+matching file skips the download.
+firecracker_kernel_sha256: "{{ lookup('env', 'FIRECRACKER_KERNEL_SHA256') }}"
+firecracker_rootfs_sha256: "{{ lookup('env', 'FIRECRACKER_ROOTFS_SHA256') }}"

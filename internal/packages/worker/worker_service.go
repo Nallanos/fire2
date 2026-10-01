@@ -14,6 +14,7 @@ func NewWorkerService(orchestratorClient orchestratorv1.OrchestratorServiceClien
 	return &WorkerService{
 		orchestratorClient: orchestratorClient,
 		runningSandboxes:   make(map[string]*runtimeClient.Client),
+		deletingSandboxes:  make(map[string]struct{}),
 	}
 }
 

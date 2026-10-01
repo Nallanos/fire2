@@ -45,6 +45,11 @@ firecracker_install_dir: /usr/local/bin
 # that point simply skip image provisioning instead of failing.
 firecracker_kernel_url: ""
 firecracker_rootfs_url: ""
+# Optional sha256 of each image. When set and the local file already matches,
+# get_url makes no HTTP request at all (without it, get_url always does a
+# conditional GET, so a dead URL fails the play even if the file is present).
+firecracker_kernel_sha256: ""
+firecracker_rootfs_sha256: ""
 firecracker_images_dir: "{{ fire2_install_dir }}/firecracker/images"
 
 # Per-VM working directories (socket + writable rootfs copy) live here, owned

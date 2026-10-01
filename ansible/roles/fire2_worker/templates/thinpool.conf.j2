@@ -9,6 +9,13 @@ BLOCK_SECTORS={{ thinpool_block_size_sectors }}
 LOW_WATER_MARK={{ thinpool_low_water_mark_blocks }}
 BASE_IMAGE={{ firecracker_images_dir }}/rootfs.ext4
 
+# fire2-thin sets these on every sandbox device node right after creating it
+# (see fire2-thin create()) instead of relying solely on the async udev rule
+# (12-fire2-dm-permissions.rules) — --noudevsync means dmsetup returns before
+# udev has necessarily applied it.
+FIRE2_USER={{ fire2_user }}
+FIRE2_GROUP={{ fire2_group }}
+
 # Thin volume IDs are 24-bit. Base volumes use 1..999, sandbox volumes
 # FIRST_SANDBOX_ID and up: everything at or above it is disposable.
 FIRST_SANDBOX_ID=1000

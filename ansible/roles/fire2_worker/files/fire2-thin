@@ -46,10 +46,16 @@ create() {
 	done
 	[[ -n $id ]] || die "no free thin id after 16 attempts"
 
-	if ! err=$(dmsetup create "$name" --table "0 $BASE_SECTORS thin $POOL $id" 2>&1); then
+	if ! err=$(dmsetup create "$name" --noudevsync --table "0 $BASE_SECTORS thin $POOL $id" 2>&1); then
 		dmsetup message "$POOL" 0 "delete $id" || true
 		die "activate $name: $err"
 	fi
+	# --noudevsync returns before udev has created the node (let alone applied
+	# 12-fire2-dm-permissions.rules): create it ourselves, then set ownership
+	# rather than leave Firecracker's first open() racing udev.
+	dmsetup mknodes "$name"
+	chown "$FIRE2_USER:$FIRE2_GROUP" "/dev/mapper/$name"
+	chmod 0660 "/dev/mapper/$name"
 	echo "/dev/mapper/$name"
 }
 
