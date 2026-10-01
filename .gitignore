@@ -18,3 +18,4 @@ docs/.obsidian/
 # Never-expiring dev/prod session tokens (see make sandbox-token / cmd/devtoken)
 .sandbox/token-prod
 .sandbox/token-local
+.sandbox/*.log
