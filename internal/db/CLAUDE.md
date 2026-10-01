@@ -1,31 +1,8 @@
 # db package
 
-sqlc-generated query layer for PostgreSQL. All files except the manually-added `UpdateSandboxRunning` method are generated — do not hand-edit generated files.
+**Dead.** `internal/db/db/` (the sqlc-generated `db.Queries` layer this doc used to describe) is empty — untracked in git, never regenerated, and nothing in the tree imports it anymore (confirmed by grepping for `internal/fire2/internal/db` imports and by `go build -tags integration ./...` passing clean). Every repository (`sandbox`, `worker`, `auth`, `orchestrator/event_repository`) now talks to Postgres directly via hand-written `pgx` queries instead — see e.g. `internal/packages/sandbox/repository_postgres.go` for the pattern.
 
-## Code generation
-
-```bash
-sqlc generate   # regenerates from internal/db/queries/*.sql
-```
-
-**Known issue:** `sqlc generate` currently fails because migrations 003 and 004 wrap DDL in `DO $$ BEGIN...END $$` PL/pgSQL blocks that sqlc can't parse statically. If you add new queries, add the SQL to `internal/db/queries/*.sql` and manually add the corresponding Go code to the generated `.sql.go` file and the `Querier` interface.
-
-## Querier interface
-
-| Method | Table | Notes |
-|--------|-------|-------|
-| `CreateSandbox` | sandboxes | Full insert |
-| `GetSandbox` | sandboxes | By ID |
-| `ListSandboxes` | sandboxes | Ordered by id DESC |
-| `UpdateSandbox` | sandboxes | Status only |
-| `UpdateSandboxRunning` | sandboxes | Status + port + image — **manually added** |
-| `DeleteSandbox` | sandboxes | By ID |
-| `CreateWorker` | worker | Full insert |
-| `GetWorker` | worker | By ID |
-| `ListWorkers` | worker | All rows |
-| `UpdateWorker` | worker | All mutable fields incl. heartbeat |
-| `DeleteWorker` | worker | By ID |
-| `CreateSandboxEvent` | sandbox_events | Insert event |
+If you're tempted to run `sqlc generate` to bring this back: don't, unless you're deliberately reintroducing the sqlc layer. It was known-broken anyway (migrations 003/004 wrap DDL in `DO $$ ... END $$` blocks sqlc can't parse statically) and the last two callers referencing it (`internal/app/sandbox_flow_integration_test.go`, `internal/app/river_retry_integration_test.go`) were deleted rather than ported, since the pgx-based repositories already cover the same ground.
 
 ## Migrations
 

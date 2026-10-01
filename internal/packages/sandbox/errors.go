@@ -3,7 +3,6 @@ package sandbox
 import "errors"
 
 var ErrNotFound = errors.New("sandbox not found")
-var ErrDockerClientRequired = errors.New("docker client is required")
 
 const (
 	ErrMsgInvalidJSON         = "invalid json"

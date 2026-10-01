@@ -1,10 +1,10 @@
 [Unit]
 Description=fire2 worker node (instance %i)
 Documentation=https://github.com/nallanos/fire2
-After=network.target docker.service fire2-thinpool.service
+After=network.target fire2-thinpool.service
 # Sandbox root drives are snapshots from the thin pool: no pool, no worker
 # (so it never heartbeats and never gets scheduled).
-Requires=docker.service fire2-thinpool.service
+Requires=fire2-thinpool.service
 
 [Service]
 # No NoNewPrivileges=: the worker needs sudo for fire2-thin.
