@@ -40,6 +40,36 @@
     enabled: true
   loop: "{{ range(1, worker_instances + 1) | list }}"
 
+# worker_instances can shrink (e.g. 2 -> 1). Nothing above stops the extra
+# instances, so find them through the env files left behind and remove them.
+- name: Find installed worker env files
+  ansible.builtin.find:
+    paths: "{{ fire2_install_dir }}"
+    patterns: 'worker-[0-9]+\.env'
+    use_regex: true
+  register: worker_env_files
+
+- name: Compute surplus worker instances
+  ansible.builtin.set_fact:
+    surplus_instances: >-
+      {{ worker_env_files.files
+         | map(attribute='path') | map('basename')
+         | map('regex_replace', '^worker-(\d+)\.env$', '\1') | map('int')
+         | select('gt', worker_instances) | list }}
+
+- name: Stop and disable surplus worker instances
+  ansible.builtin.systemd:
+    name: "fire2-worker@{{ item }}"
+    state: stopped
+    enabled: false
+  loop: "{{ surplus_instances }}"
+
+- name: Remove surplus worker env files
+  ansible.builtin.file:
+    path: "{{ fire2_install_dir }}/worker-{{ item }}.env"
+    state: absent
+  loop: "{{ surplus_instances }}"
+
 # Flush now so all instances are running before any caller assumes they are
 # heartbeating — avoids a window where the orchestrator routes to a worker
 # that hasn't finished (re)starting yet.
