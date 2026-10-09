@@ -45,3 +45,26 @@
 # that hasn't finished (re)starting yet.
 - name: Flush handlers before workers start heartbeating
   ansible.builtin.meta: flush_handlers
+
+# A crash-looping unit reports "changed/ok" at start time, so verify it is
+# still healthy once systemd has had time to restart it a few times.
+- name: Wait for workers to settle
+  ansible.builtin.pause:
+    seconds: 20
+
+- name: Read worker unit state
+  ansible.builtin.command: "systemctl show -p ActiveState,NRestarts fire2-worker@{{ item }}"
+  loop: "{{ range(1, worker_instances + 1) | list }}"
+  register: worker_state
+  changed_when: false
+  check_mode: false
+
+- name: Assert workers are active and not restarting
+  ansible.builtin.assert:
+    that:
+      - "'ActiveState=active' in item.stdout_lines"
+      - "'NRestarts=0' in item.stdout_lines"
+    fail_msg: "fire2-worker@{{ item.item }} is unhealthy: {{ item.stdout_lines }}"
+  loop: "{{ worker_state.results }}"
+  loop_control:
+    label: "fire2-worker@{{ item.item }}"

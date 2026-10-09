@@ -5,6 +5,21 @@
       - orchestrator_grpc_addr | length > 0
     fail_msg: "orchestrator_grpc_addr must be set in group_vars/workers.yml"
 
+- name: Check for /dev/kvm
+  ansible.builtin.stat:
+    path: /dev/kvm
+  register: kvm_device
+
+- name: Validate host can run Firecracker
+  ansible.builtin.assert:
+    that:
+      - kvm_device.stat.exists
+      - ansible_architecture == "x86_64"
+    fail_msg: >-
+      Firecracker needs /dev/kvm and an x86_64 host (found /dev/kvm exists:
+      {{ kvm_device.stat.exists }}, architecture: {{ ansible_architecture }}).
+      Remove this host from the 'workers' group.
+
 - ansible.builtin.import_tasks: tailscale.yml
 - ansible.builtin.import_tasks: user.yml
 - ansible.builtin.import_tasks: firecracker.yml
