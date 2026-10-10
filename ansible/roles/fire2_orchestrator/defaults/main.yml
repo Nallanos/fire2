@@ -3,6 +3,14 @@ fire2_user: fire2
 fire2_group: fire2
 fire2_install_dir: /opt/fire2
 
+# dbmate is installed by tasks/migrate.yml into a root-owned path: root runs
+# it, so it must not live somewhere an unprivileged user can overwrite it.
+# The checksum was computed from the official release asset over HTTPS
+# (trust on first use); bump version and checksum together.
+dbmate_version: "1.16.2"
+dbmate_sha256: "8570066fc8388585e1386d512b50cf2a0c416bbc6eff7cac1c0be6d9885e9519"
+dbmate_bin: /usr/local/bin/dbmate
+
 api_port: 8081
 orchestrator_grpc_port: 7001
 

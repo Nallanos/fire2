@@ -66,6 +66,14 @@ orchestrator-build:
 orchestrator-deploy:
 	$(ANSIBLE_CMD) $(ORCHESTRATOR_PLAYBOOK) -i $(ANSIBLE_INVENTORY)
 
+# Applies pending migrations (internal/db/migrations) to the prod database
+# by running dbmate on MainDev — the DB only listens there. Same tasks run
+# as part of orchestrator-deploy, before the binary is replaced; this target
+# runs them alone. Add ANSIBLE_ARGS="--check" to preview.
+.PHONY: db-migrate-prod
+db-migrate-prod:
+	$(ANSIBLE_CMD) $(ORCHESTRATOR_PLAYBOOK) -i $(ANSIBLE_INVENTORY) --tags migrate $(ANSIBLE_ARGS)
+
 # Smoke-test sandbox creation against a live API. API_HOST defaults to prod
 # (see make/sandbox.mk) — override on the command line to hit local instead:
 #   make ansible-smoke API_HOST=localhost:8081

@@ -111,3 +111,27 @@ sandbox-list: sandbox-token
 	@echo "hitting API at $(API_HOST)"
 	curl -sS http://$(API_HOST)/api/sandboxes \
 		-H "Authorization: Bearer $$(cat $(SANDBOX_TOKEN_FILE))" | cat
+
+# sandbox-wipe deletes every sandbox the API returns, whatever worker hosts
+# it, one DELETE at a time. Destructive and the default API_HOST is prod, so
+# it refuses to run without CONFIRM=yes. Only sandboxes known to the API are
+# reached: anything orphaned on a worker but absent from the DB survives.
+# The listing can take ~20s while dead workers time out.
+.PHONY: sandbox-wipe
+sandbox-wipe: sandbox-token
+	@test "$(CONFIRM)" = "yes" || (echo "refusing to wipe all sandboxes on $(API_HOST): re-run with CONFIRM=yes"; exit 1)
+	@echo "wiping all sandboxes at $(API_HOST)"
+	@ids=$$(curl -sS -m 90 http://$(API_HOST)/api/sandboxes \
+		-H "Authorization: Bearer $$(cat $(SANDBOX_TOKEN_FILE))" | jq -r '.[].id') || exit 1; \
+	test -n "$$ids" || { echo "no sandboxes to delete"; exit 0; }; \
+	n=0; failed=0; \
+	for id in $$ids; do \
+		code=$$(curl -sS -m 60 -o /dev/null -w '%{http_code}' -X DELETE \
+			-H "Authorization: Bearer $$(cat $(SANDBOX_TOKEN_FILE))" \
+			http://$(API_HOST)/api/sandboxes/$$id); \
+		echo "$$id -> $$code"; \
+		n=$$((n+1)); \
+		case $$code in 2*) ;; *) failed=$$((failed+1));; esac; \
+	done; \
+	echo "$$n processed, $$failed failed"; \
+	test $$failed -eq 0

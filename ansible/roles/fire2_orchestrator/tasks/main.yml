@@ -7,5 +7,7 @@
 
 - ansible.builtin.import_tasks: tailscale.yml
 - ansible.builtin.import_tasks: user.yml
+- ansible.builtin.import_tasks: migrate.yml
+  tags: [migrate]
 - ansible.builtin.import_tasks: binary.yml
 - ansible.builtin.import_tasks: systemd.yml
