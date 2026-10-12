@@ -29,6 +29,33 @@ func detectWorkerAddress() (string, error) {
 	return "", errors.New("no suitable IP address found")
 }
 
+// Per-sandbox footprint used to size a worker. Matches the sandbox defaults
+// (migration 007: 1 vCPU / 256 MiB).
+const (
+	sandboxVcpu   = 1
+	sandboxMemMiB = 256
+	// memReserveMiB is held back from the memory budget for the OS, the worker
+	// process and per-microVM Firecracker overhead.
+	memReserveMiB = 128
+)
+
+// computeCapacity returns how many sandboxes a worker can host: the scarcer of
+// CPU and memory decides. WORKER_MAX_SANDBOXES, when set to a positive value,
+// overrides the computation but never exceeds what the budgets allow.
+func computeCapacity(cpuBudget, memBudgetMiB int) int {
+	byCPU := cpuBudget / sandboxVcpu
+	byMem := (memBudgetMiB - memReserveMiB) / sandboxMemMiB
+	capacity := min(byCPU, byMem)
+	if capacity < 0 {
+		capacity = 0
+	}
+
+	if v, err := strconv.Atoi(os.Getenv("WORKER_MAX_SANDBOXES")); err == nil && v > 0 {
+		return min(v, capacity)
+	}
+	return capacity
+}
+
 func readMemBudgetMB() int {
 	data, err := os.ReadFile("/proc/meminfo")
 	if err != nil {
@@ -142,7 +169,7 @@ func (w *WorkerService) UpdateWorker(ctx context.Context) (string, error) {
 	if w.worker.Address == "" {
 		w.worker.Address = address
 	}
-	w.worker.Capacity = w.worker.Budget.Cpu_budget
+	w.worker.Capacity = computeCapacity(w.worker.Budget.Cpu_budget, w.worker.Budget.Mem_budget)
 	w.worker.cpu_usage = cpuUsage
 	w.worker.mem_usage = memUsage
 	w.worker.Status = WorkerStatusActive

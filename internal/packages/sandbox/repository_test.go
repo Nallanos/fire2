@@ -4,6 +4,10 @@ package sandbox
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -125,6 +129,53 @@ func TestSandboxRepository_AssignWorker(t *testing.T) {
 	}
 	if sbx.Status != StatusAssigned {
 		t.Fatalf("expected status=assigned, got %s", sbx.Status)
+	}
+}
+
+func TestSandboxRepository_AssignWorker_RespectsCapacity(t *testing.T) {
+	ctx := context.Background()
+	pool := testutil.SetupPostgres(t, ctx)
+	repo := NewPostgresRepository(pool)
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO worker (id, status, address, capacity, port, cpu_budget, mem_budget, cpu_usage, mem_usage, last_heartbeat, created_at)
+		VALUES ('wk-cap', 'active', '127.0.0.1', 2, 50051, 4, 4096, 0, 0, NOW(), NOW())
+	`); err != nil {
+		t.Fatalf("insert worker: %v", err)
+	}
+
+	const n = 8
+	for i := 0; i < n; i++ {
+		if _, err := repo.Create(ctx, Sandbox{
+			ID: fmt.Sprintf("sbx-cap-%d", i), Runtime: "node", Status: StatusScheduling,
+			Image: "node:20-alpine", Port: 3000, TTL: 3600, CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+	}
+
+	// Assign concurrently: only `capacity` of them may win.
+	var wg sync.WaitGroup
+	var assigned, full atomic.Int32
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			_, err := repo.AssignWorker(ctx, id, "wk-cap")
+			switch {
+			case err == nil:
+				assigned.Add(1)
+			case errors.Is(err, ErrWorkerFull):
+				full.Add(1)
+			default:
+				t.Errorf("AssignWorker(%s): %v", id, err)
+			}
+		}(fmt.Sprintf("sbx-cap-%d", i))
+	}
+	wg.Wait()
+
+	if assigned.Load() != 2 || full.Load() != n-2 {
+		t.Fatalf("want 2 assigned and %d full, got %d assigned and %d full", n-2, assigned.Load(), full.Load())
 	}
 }
 

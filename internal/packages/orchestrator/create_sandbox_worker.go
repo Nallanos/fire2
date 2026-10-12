@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -121,20 +122,39 @@ func (w *CreateSandboxWorker) stepAssign(ctx context.Context, sbx sandboxpkg.San
 		return w.maybeCleanup(ctx, sbx.ID, isFinal, job, fmt.Errorf("list workers: %w", err))
 	}
 
+	// The load info behind candidates is a snapshot, so the chosen worker may
+	// have filled up since. AssignWorker is the authoritative check: when it
+	// reports the worker full, drop it and choose again among the others.
 	candidates := buildCandidates(ctx, workers)
-	chosen, err := w.scheduler.ChooseLeastUsedWorker(candidates)
-	if errors.Is(err, ErrClusterFull) {
-		// Retrying with backoff won't free capacity fast enough to be useful
-		// and the HTTP caller is waiting: fail fast, treat as final.
-		return w.maybeCleanup(ctx, sbx.ID, true, job, fmt.Errorf("choose worker: %w", err))
-	}
-	if err != nil {
-		return w.maybeCleanup(ctx, sbx.ID, isFinal, job, fmt.Errorf("choose worker: %w", err))
-	}
+	var assigned sandboxpkg.Sandbox
+	droppedFull := false
+	for {
+		chosen, err := w.scheduler.ChooseLeastUsedWorker(candidates)
+		if errors.Is(err, ErrClusterFull) {
+			// Retrying with backoff won't free capacity fast enough to be useful
+			// and the HTTP caller is waiting: fail fast, treat as final.
+			return w.maybeCleanup(ctx, sbx.ID, true, job, fmt.Errorf("choose worker: %w", err))
+		}
+		if err != nil {
+			if droppedFull && errors.Is(err, ErrNoWorkerCandidates) {
+				// Every candidate was dropped for being full.
+				return w.maybeCleanup(ctx, sbx.ID, true, job, fmt.Errorf("choose worker: %w", ErrClusterFull))
+			}
+			return w.maybeCleanup(ctx, sbx.ID, isFinal, job, fmt.Errorf("choose worker: %w", err))
+		}
 
-	assigned, err := w.sandboxRepo.AssignWorker(ctx, sbx.ID, chosen.Worker.ID)
-	if err != nil {
-		return w.maybeCleanup(ctx, sbx.ID, isFinal, job, fmt.Errorf("assign worker: %w", err))
+		assigned, err = w.sandboxRepo.AssignWorker(ctx, sbx.ID, chosen.Worker.ID)
+		if errors.Is(err, sandboxpkg.ErrWorkerFull) {
+			droppedFull = true
+			candidates = slices.DeleteFunc(candidates, func(c WorkerCandidate) bool {
+				return c.Worker.ID == chosen.Worker.ID
+			})
+			continue
+		}
+		if err != nil {
+			return w.maybeCleanup(ctx, sbx.ID, isFinal, job, fmt.Errorf("assign worker: %w", err))
+		}
+		break
 	}
 	if assigned.WorkerID == nil {
 		// Guard rejected the update — status advanced concurrently, re-read.

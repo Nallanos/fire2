@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -22,7 +23,8 @@ type Repository interface {
 	// UpdateStatus advances status only when current status is one of allowedFrom.
 	// Returns (updated sandbox, rowsAffected, error). rowsAffected=0 means the guard rejected the update.
 	UpdateStatus(ctx context.Context, id string, status Status, allowedFrom ...Status) (Sandbox, int64, error)
-	// AssignWorker sets worker_id and transitions status from scheduling→assigned atomically.
+	// AssignWorker sets worker_id and transitions status from scheduling→assigned atomically,
+	// only if the worker still has capacity (otherwise ErrWorkerFull).
 	AssignWorker(ctx context.Context, id string, workerID string) (Sandbox, error)
 	// ClearWorker sets worker_id back to null; guarded to only act from cleanup_pending.
 	ClearWorker(ctx context.Context, id string) error
@@ -131,18 +133,66 @@ func (r *PostgresRepository) UpdateStatus(ctx context.Context, id string, status
 	return s, 1, nil
 }
 
+// AssignWorker only assigns when the worker still has room. It runs in a
+// transaction: the worker row is locked first so concurrent assignments to the
+// same worker are serialized, and the occupancy count is then read by a second
+// statement (fresh snapshot) that sees every assignment committed before the
+// lock was granted. A single UPDATE with a subquery count would not — its
+// snapshot is taken before it waits on the lock.
+//
+// Returns ErrWorkerFull when the worker is at capacity, and a zero Sandbox with
+// a nil error when the status guard rejected the update (advanced concurrently).
 func (r *PostgresRepository) AssignWorker(ctx context.Context, id string, workerID string) (Sandbox, error) {
+	beginner, ok := r.db.(interface {
+		Begin(ctx context.Context) (pgx.Tx, error)
+	})
+	if !ok {
+		return Sandbox{}, errors.New("AssignWorker: db cannot begin a transaction")
+	}
+	tx, err := beginner.Begin(ctx)
+	if err != nil {
+		return Sandbox{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var capacity int
+	err = tx.QueryRow(ctx, `SELECT capacity FROM worker WHERE id = $1 FOR UPDATE`, workerID).Scan(&capacity)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Sandbox{}, fmt.Errorf("assign worker: worker %s not found", workerID)
+		}
+		return Sandbox{}, err
+	}
+
+	// cleanup_pending still holds its VM until the cleanup job clears worker_id.
 	const q = `
 		UPDATE sandboxes SET worker_id = $1, status = 'assigned'
 		WHERE id = $2 AND status = 'scheduling'
+		  AND (SELECT count(*) FROM sandboxes
+		       WHERE worker_id = $1
+		         AND status IN ('assigned', 'starting', 'running', 'cleanup_pending')) < $3
 		RETURNING id, runtime, status, ttl, created_at, port, preview_url, image, worker_id, vcpu_count, mem_size_mib, user_id`
 
-	row := r.db.QueryRow(ctx, q, workerID, id)
-	s, err := scanSandbox(row)
+	s, err := scanSandbox(tx.QueryRow(ctx, q, workerID, id, capacity))
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Sandbox{}, nil
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return Sandbox{}, err
 		}
+		// No row updated: either the worker is full or the status guard rejected us.
+		var status string
+		if err := tx.QueryRow(ctx, `SELECT status FROM sandboxes WHERE id = $1`, id).Scan(&status); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return Sandbox{}, ErrNotFound
+			}
+			return Sandbox{}, err
+		}
+		if Status(status) == StatusScheduling {
+			return Sandbox{}, ErrWorkerFull
+		}
+		return Sandbox{}, nil
+	}
+
+	if err := tx.Commit(ctx); err != nil {
 		return Sandbox{}, err
 	}
 	return s, nil
