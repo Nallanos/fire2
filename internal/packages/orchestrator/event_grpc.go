@@ -11,6 +11,9 @@ import (
 	orchestratorv1 "github/nallanos/fire2/gen/orchestrator/v1"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -26,10 +29,36 @@ type EventGRPCServer struct {
 	sandboxRepo sandboxpkg.Repository
 	eventRepo   EventRepository
 	workerRepo  workerpkg.Repository
+
+	// pool runs the heartbeat transaction (fencing check + worker update +
+	// inventory reconciliation). Required to accept heartbeat inventories.
+	pool *pgxpool.Pool
+	// riverClient enqueues orphan removals in the heartbeat transaction. When
+	// nil, orphans are only logged.
+	riverClient *river.Client[pgx.Tx]
 }
 
-func NewEventGRPCServer(sandboxRepo sandboxpkg.Repository, eventRepo EventRepository, workerRepo workerpkg.Repository) *EventGRPCServer {
-	return &EventGRPCServer{sandboxRepo: sandboxRepo, eventRepo: eventRepo, workerRepo: workerRepo}
+// EventServerOption configures optional collaborators of EventGRPCServer.
+type EventServerOption func(*EventGRPCServer)
+
+// WithTransactions gives the server the pool used to reconcile heartbeat
+// inventories atomically.
+func WithTransactions(pool *pgxpool.Pool) EventServerOption {
+	return func(s *EventGRPCServer) { s.pool = pool }
+}
+
+// WithRiverClient lets heartbeat reconciliation enqueue removal of orphan
+// sandboxes.
+func WithRiverClient(c *river.Client[pgx.Tx]) EventServerOption {
+	return func(s *EventGRPCServer) { s.riverClient = c }
+}
+
+func NewEventGRPCServer(sandboxRepo sandboxpkg.Repository, eventRepo EventRepository, workerRepo workerpkg.Repository, opts ...EventServerOption) *EventGRPCServer {
+	s := &EventGRPCServer{sandboxRepo: sandboxRepo, eventRepo: eventRepo, workerRepo: workerRepo}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // IngestSandboxEvent stores a sandbox event and updates sandbox status.
@@ -62,7 +91,22 @@ func (s *EventGRPCServer) IngestSandboxEvent(ctx context.Context, req *orchestra
 		return nil, status.Error(codes.InvalidArgument, "missing required fields")
 	}
 
-	_, err := s.eventRepo.CreateSandboxEvent(ctx, SandboxEvent{
+	token := req.GetFencingToken()
+	if token <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "fencing_token is required")
+	}
+	current, err := s.workerRepo.Get(ctx, workerID)
+	if errors.Is(err, workerpkg.ErrNotFound) {
+		return nil, status.Error(codes.FailedPrecondition, "worker is not registered")
+	}
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "get worker: %v", err)
+	}
+	if current.FencingToken != token {
+		return nil, status.Error(codes.FailedPrecondition, "worker fencing token is stale")
+	}
+
+	_, err = s.eventRepo.CreateSandboxEvent(ctx, SandboxEvent{
 		ID:         eventID,
 		SandboxID:  sandboxID,
 		WorkerID:   workerID,
@@ -73,7 +117,7 @@ func (s *EventGRPCServer) IngestSandboxEvent(ctx context.Context, req *orchestra
 		return nil, status.Errorf(codes.Internal, "store sandbox event: %v", err)
 	}
 
-	s.applyStatusFromState(ctx, sandboxID, state)
+	s.applyStatusFromState(ctx, sandboxID, workerID, token, state)
 
 	return &emptypb.Empty{}, nil
 }
@@ -108,15 +152,85 @@ func (s *EventGRPCServer) ReportWorkerHeartbeat(ctx context.Context, req *orches
 	log.Printf("received worker heartbeat: worker_id=%s status=%s address=%s port=%d capacity=%d cpu_usage=%d mem_usage=%d",
 		req.GetWorkerId(), req.GetStatus(), req.GetAddress(), req.GetPort(), req.GetCapacity(), req.GetCpuUsage(), req.GetMemUsage())
 
-	_, err := s.workerRepo.Update(ctx, w)
-	if errors.Is(err, workerpkg.ErrFenced) {
-		return nil, status.Error(codes.FailedPrecondition, "worker fencing token is stale")
-	}
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "update worker: %v", err)
+	if !req.GetInventoryComplete() {
+		// No usable inventory: only the worker row is refreshed. Sandbox
+		// presence is left untouched, so missing inventories age toward
+		// liveness expiry rather than being mistaken for an empty worker.
+		if _, err := s.workerRepo.Update(ctx, w); err != nil {
+			return nil, heartbeatError(err)
+		}
+		return &emptypb.Empty{}, nil
 	}
 
+	if err := s.reconcileHeartbeat(ctx, w, req.GetSandboxes()); err != nil {
+		return nil, heartbeatError(err)
+	}
 	return &emptypb.Empty{}, nil
+}
+
+func heartbeatError(err error) error {
+	if errors.Is(err, workerpkg.ErrFenced) {
+		return status.Error(codes.FailedPrecondition, "worker fencing token is stale")
+	}
+	return status.Errorf(codes.Internal, "heartbeat: %v", err)
+}
+
+// reconcileHeartbeat verifies the fencing token, refreshes the worker row and
+// reconciles the reported inventory against the database in a single
+// transaction. A stale token fails the worker update and rolls everything back.
+func (s *EventGRPCServer) reconcileHeartbeat(ctx context.Context, w workerpkg.Worker, inventory []*orchestratorv1.SandboxInventoryItem) error {
+	if s.pool == nil {
+		return errors.New("inventory reconciliation is not configured")
+	}
+
+	items := make([]sandboxpkg.InventoryItem, 0, len(inventory))
+	seen := make(map[string]struct{}, len(inventory))
+	for _, it := range inventory {
+		id := strings.TrimSpace(it.GetSandboxId())
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		items = append(items, sandboxpkg.InventoryItem{SandboxID: id, State: it.GetState()})
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	workerRepo := s.workerRepo.WithTx(tx)
+	if _, err := workerRepo.Update(ctx, w); err != nil {
+		return err
+	}
+	first, err := workerRepo.ClaimInventory(ctx, w.ID, w.FencingToken)
+	if err != nil {
+		return err
+	}
+	orphans, err := s.sandboxRepo.WithTx(tx).ReconcileInventory(ctx, w.ID, first, items)
+	if err != nil {
+		return err
+	}
+
+	if len(orphans) > 0 {
+		if s.riverClient == nil {
+			log.Printf("heartbeat: worker=%s reports %d orphan sandbox(es) %v; no river client, not removing", w.ID, len(orphans), orphans)
+		} else {
+			params := make([]river.InsertManyParams, 0, len(orphans))
+			for _, id := range orphans {
+				params = append(params, river.InsertManyParams{Args: RemoveOrphanArgs{WorkerID: w.ID, SandboxID: id}})
+			}
+			if _, err := s.riverClient.InsertManyTx(ctx, tx, params); err != nil {
+				return err
+			}
+		}
+	}
+
+	return tx.Commit(ctx)
 }
 
 func workerFromHeartbeat(req *orchestratorv1.WorkerHeartbeat) workerpkg.Worker {
@@ -144,19 +258,19 @@ func workerFromHeartbeat(req *orchestratorv1.WorkerHeartbeat) workerpkg.Worker {
 // Firecracker instance state. Updates are only applied when the sandbox is in
 // a state the event handler owns. rowsAffected=0 means the guard rejected the
 // update (sandbox in a state the job owns).
-func (s *EventGRPCServer) applyStatusFromState(ctx context.Context, sandboxID, state string) {
+func (s *EventGRPCServer) applyStatusFromState(ctx context.Context, sandboxID, workerID string, token int64, state string) {
 	target, allowedFrom, ok := statusTransitionForState(state)
 	if !ok {
 		return
 	}
 
-	_, n, err := s.sandboxRepo.UpdateStatus(ctx, sandboxID, target, allowedFrom...)
+	n, err := s.sandboxRepo.UpdateStatusFenced(ctx, sandboxID, workerID, token, target, allowedFrom...)
 	if err != nil {
 		log.Printf("update sandbox status failed: sandbox=%s state=%s err=%v", sandboxID, state, err)
 		return
 	}
 	if n == 0 {
-		log.Printf("ignored sandbox event: sandbox=%s state=%s — current status not in allowed set", sandboxID, state)
+		log.Printf("ignored sandbox event: sandbox=%s state=%s — current status not in allowed set, or sandbox not hosted by this worker incarnation", sandboxID, state)
 	}
 }
 

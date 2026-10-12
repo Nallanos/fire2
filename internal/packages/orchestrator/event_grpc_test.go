@@ -47,12 +47,19 @@ func sandboxStatus(t *testing.T, ctx context.Context, repo sandboxpkg.Repository
 	return sbx.Status
 }
 
+// ingestEvent sends an event as worker "wk-test", which the test must have
+// registered (seedWorker) beforehand; the event carries its current token.
 func ingestEvent(t *testing.T, ctx context.Context, srv *EventGRPCServer, sandboxID, state string) {
 	t.Helper()
-	_, err := srv.IngestSandboxEvent(ctx, &orchestratorv1.SandboxEvent{
-		SandboxId: sandboxID,
-		WorkerId:  "wk-test",
-		State:     state,
+	w, err := srv.workerRepo.Get(ctx, "wk-test")
+	if err != nil {
+		t.Fatalf("worker wk-test must be seeded before ingesting events: %v", err)
+	}
+	_, err = srv.IngestSandboxEvent(ctx, &orchestratorv1.SandboxEvent{
+		SandboxId:    sandboxID,
+		WorkerId:     "wk-test",
+		State:        state,
+		FencingToken: w.FencingToken,
 	})
 	if err != nil {
 		t.Fatalf("IngestSandboxEvent state=%s: %v", state, err)
@@ -154,7 +161,9 @@ func TestEventGuard_RunningWhileStarting(t *testing.T) {
 	eventRepo := NewEventRepository(pool)
 	workerRepo := workerpkg.NewPostgresRepository(pool)
 
-	seedSandbox(t, ctx, sandboxRepo, "sbx-h4", sandboxpkg.StatusStarting)
+	seedWorker(t, ctx, workerRepo, "wk-test")
+	hostID := "wk-test"
+	seedSandboxForJob(t, ctx, sandboxRepo, "sbx-h4", sandboxpkg.StatusStarting, &hostID)
 
 	var buf bytes.Buffer
 	log.SetOutput(&buf)

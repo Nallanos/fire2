@@ -23,6 +23,24 @@ type Repository interface {
 	// UpdateStatus advances status only when current status is one of allowedFrom.
 	// Returns (updated sandbox, rowsAffected, error). rowsAffected=0 means the guard rejected the update.
 	UpdateStatus(ctx context.Context, id string, status Status, allowedFrom ...Status) (Sandbox, int64, error)
+	// UpdateStatusFenced is UpdateStatus restricted to a sandbox hosted by workerID
+	// whose current fencing token is token. A stale worker incarnation matches no
+	// row, so it cannot move a sandbox's status.
+	UpdateStatusFenced(ctx context.Context, id, workerID string, token int64, status Status, allowedFrom ...Status) (int64, error)
+	// ClaimTTLExpired moves every non-terminal sandbox whose created_at + ttl
+	// (seconds; <= 0 expires immediately) has passed to cleanup_pending and
+	// returns their IDs. Rows locked by a concurrent claim are skipped.
+	ClaimTTLExpired(ctx context.Context) ([]string, error)
+	// ClaimLivenessExpired moves every active sandbox hosted by a worker that has
+	// not listed it for longer than timeout to cleanup_pending and returns their IDs.
+	ClaimLivenessExpired(ctx context.Context, timeout time.Duration) ([]string, error)
+	// ReconcileInventory matches a worker's complete inventory against the
+	// sandboxes assigned to it: listed sandboxes get last_seen_at refreshed
+	// (and starting→running if reported running). On the first inventory of a
+	// new incarnation, every active sandbox of the worker also gets a fresh
+	// last_seen_at so the liveness delay restarts from now. Returns the listed
+	// IDs the database does not (or no longer) attribute to this worker.
+	ReconcileInventory(ctx context.Context, workerID string, firstInventory bool, items []InventoryItem) (orphans []string, err error)
 	// AssignWorker sets worker_id and transitions status from scheduling→assigned atomically,
 	// only if the worker still has capacity (otherwise ErrWorkerFull).
 	AssignWorker(ctx context.Context, id string, workerID string) (Sandbox, error)
@@ -166,7 +184,7 @@ func (r *PostgresRepository) AssignWorker(ctx context.Context, id string, worker
 
 	// cleanup_pending still holds its VM until the cleanup job clears worker_id.
 	const q = `
-		UPDATE sandboxes SET worker_id = $1, status = 'assigned'
+		UPDATE sandboxes SET worker_id = $1, status = 'assigned', last_seen_at = now()
 		WHERE id = $2 AND status = 'scheduling'
 		  AND (SELECT count(*) FROM sandboxes
 		       WHERE worker_id = $1

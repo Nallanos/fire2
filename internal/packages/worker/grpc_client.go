@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net"
 	"os"
@@ -11,6 +12,8 @@ import (
 	workerv1 "github/nallanos/fire2/gen/worker/v1"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -53,6 +56,9 @@ func (s *WorkerGRPCServer) StopSandbox(ctx context.Context, req *workerv1.StopSa
 
 func (s *WorkerGRPCServer) RemoveSandbox(ctx context.Context, req *workerv1.RemoveSandboxRequest) (*workerv1.RemoveSandboxResponse, error) {
 	if err := s.service.RemoveSandbox(ctx, req.GetContainerId()); err != nil {
+		if errors.Is(err, ErrSandboxNotFound) {
+			return nil, status.Error(codes.NotFound, err.Error())
+		}
 		return nil, err
 	}
 

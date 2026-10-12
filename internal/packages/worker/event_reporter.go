@@ -48,8 +48,16 @@ func (r *EventReporter) Run(ctx context.Context) {
 }
 
 func (r *EventReporter) reportAll(ctx context.Context) {
+	info, err := r.worker.GetWorkerInfo(ctx)
+	if err != nil || info.FencingToken <= 0 {
+		// Not registered yet: the orchestrator would reject unfenced events.
+		return
+	}
 	for sandboxID, client := range r.worker.RunningSandboxClients() {
 		event, err := r.instanceInfoEvent(ctx, client)
+		if err == nil {
+			event.FencingToken = info.FencingToken
+		}
 		if err != nil {
 			log.Printf("event reporter: sandbox %s: describe instance info: %v", sandboxID, err)
 			continue

@@ -26,11 +26,20 @@ type Config struct {
 	HeartbeatTimeout time.Duration
 	// ReaperInterval is how often the worker-reaper periodic job runs.
 	ReaperInterval time.Duration
+	// SandboxLivenessTimeout is how long a hosting worker may go without listing
+	// a sandbox in its heartbeat inventory before the sandbox is failed and
+	// cleaned up. Defaults to 15s (three 5s worker heartbeats).
+	SandboxLivenessTimeout time.Duration
+	// SandboxReaperInterval is how often the TTL/liveness sandbox reaper runs.
+	SandboxReaperInterval time.Duration
 }
 
 const (
 	defaultHeartbeatTimeout = 15 * time.Second
 	defaultReaperInterval   = 10 * time.Second
+
+	defaultSandboxLivenessTimeout = 15 * time.Second
+	defaultSandboxReaperInterval  = time.Minute
 )
 
 func ConfigFromEnv() Config {
@@ -70,6 +79,8 @@ func ConfigFromEnv() Config {
 		OrchestratorGRPCBindHost: bindHost,
 		HeartbeatTimeout:         durationFromEnv("HEARTBEAT_TIMEOUT", defaultHeartbeatTimeout),
 		ReaperInterval:           durationFromEnv("REAPER_INTERVAL", defaultReaperInterval),
+		SandboxLivenessTimeout:   durationFromEnv("SANDBOX_LIVENESS_TIMEOUT", defaultSandboxLivenessTimeout),
+		SandboxReaperInterval:    durationFromEnv("SANDBOX_REAPER_INTERVAL", defaultSandboxReaperInterval),
 	}
 }
 
