@@ -18,6 +18,7 @@ type Repository interface {
 	Get(ctx context.Context, id string) (Worker, error)
 	Update(ctx context.Context, w Worker) (Worker, error)
 	List(ctx context.Context) ([]Worker, error)
+	ListActive(ctx context.Context) ([]Worker, error)
 	MarkStaleInactive(ctx context.Context, timeout time.Duration) (int64, error)
 }
 
@@ -142,6 +143,37 @@ func (r *PostgresRepository) MarkStaleInactive(ctx context.Context, timeout time
 func (r *PostgresRepository) List(ctx context.Context) ([]Worker, error) {
 	const q = `SELECT ` + workerColumns + ` FROM worker ORDER BY id`
 	rows, err := r.db.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var workers []Worker
+	for rows.Next() {
+		var w Worker
+		var cpuUsage, memUsage int
+		var port *int
+		if err := rows.Scan(
+			&w.ID, &w.Status, &w.Address, &w.Capacity, &port,
+			&w.Budget.Cpu_budget, &w.Budget.Mem_budget,
+			&cpuUsage, &memUsage,
+			&w.Last_heartbeat,
+		); err != nil {
+			return nil, err
+		}
+		if port != nil {
+			w.Port = *port
+		}
+		w.cpu_usage = cpuUsage
+		w.mem_usage = memUsage
+		workers = append(workers, w)
+	}
+	return workers, rows.Err()
+}
+
+func (r *PostgresRepository) ListActive(ctx context.Context) ([]Worker, error) {
+	const q = `SELECT ` + workerColumns + ` FROM worker WHERE status = $1 ORDER BY id`
+	rows, err := r.db.Query(ctx, q, string(WorkerStatusActive))
 	if err != nil {
 		return nil, err
 	}

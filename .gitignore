@@ -19,3 +19,4 @@ docs/.obsidian/
 .sandbox/token-prod
 .sandbox/token-local
 .sandbox/*.log
+.claude/settings.json

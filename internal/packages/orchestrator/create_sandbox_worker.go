@@ -123,6 +123,11 @@ func (w *CreateSandboxWorker) stepAssign(ctx context.Context, sbx sandboxpkg.San
 
 	candidates := buildCandidates(ctx, workers)
 	chosen, err := w.scheduler.ChooseLeastUsedWorker(candidates)
+	if errors.Is(err, ErrClusterFull) {
+		// Retrying with backoff won't free capacity fast enough to be useful
+		// and the HTTP caller is waiting: fail fast, treat as final.
+		return w.maybeCleanup(ctx, sbx.ID, true, job, fmt.Errorf("choose worker: %w", err))
+	}
 	if err != nil {
 		return w.maybeCleanup(ctx, sbx.ID, isFinal, job, fmt.Errorf("choose worker: %w", err))
 	}

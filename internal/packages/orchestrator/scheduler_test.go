@@ -1,8 +1,11 @@
 package orchestrator
 
 import (
+	"errors"
 	"math/rand"
 	"testing"
+
+	"github.com/riverqueue/river/rivertype"
 
 	workerv1 "github/nallanos/fire2/gen/worker/v1"
 	workerpkg "github/nallanos/fire2/internal/packages/worker"
@@ -59,12 +62,43 @@ func TestSchedulerAllWorkersAtCapacity(t *testing.T) {
 		workerCandidate("worker-b", 100, 100, 100, 100),
 	}
 
-	picked, err := scheduler.ChooseLeastUsedWorker(candidates)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	_, err := scheduler.ChooseLeastUsedWorker(candidates)
+	if !errors.Is(err, ErrClusterFull) {
+		t.Fatalf("expected ErrClusterFull, got %v", err)
 	}
-	if picked.Worker.ID != "worker-a" && picked.Worker.ID != "worker-b" {
-		t.Fatalf("unexpected worker selected: %s", picked.Worker.ID)
+}
+
+func TestSchedulerSkipsSaturatedWorker(t *testing.T) {
+	scheduler := NewSchedulerWithRand(rand.New(rand.NewSource(3)))
+	candidates := []WorkerCandidate{
+		workerCandidate("full-cpu", 100, 100, 10, 100),
+		workerCandidate("full-mem", 10, 100, 100, 100),
+		workerCandidate("free", 90, 100, 90, 100),
+	}
+
+	for i := 0; i < 50; i++ {
+		picked, err := scheduler.ChooseLeastUsedWorker(candidates)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if picked.Worker.ID != "free" {
+			t.Fatalf("picked saturated worker %s", picked.Worker.ID)
+		}
+	}
+}
+
+func TestJobFailedClusterFull(t *testing.T) {
+	job := &rivertype.JobRow{Errors: []rivertype.AttemptError{
+		{Error: "max attempts exhausted: choose worker: " + ErrClusterFull.Error()},
+	}}
+	if !jobFailedClusterFull(job) {
+		t.Fatal("expected cluster-full match")
+	}
+	if jobFailedClusterFull(&rivertype.JobRow{Errors: []rivertype.AttemptError{{Error: "boom"}}}) {
+		t.Fatal("unexpected match")
+	}
+	if jobFailedClusterFull(nil) {
+		t.Fatal("nil job must not match")
 	}
 }
 
