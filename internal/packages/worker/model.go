@@ -1,10 +1,11 @@
 package worker
 
 import (
-	orchestratorv1 "github/nallanos/fire2/gen/orchestrator/v1"
-	runtimeClient "github/nallanos/fire2/internal/packages/runtime"
 	"sync"
 	"time"
+
+	orchestratorv1 "github/nallanos/fire2/gen/orchestrator/v1"
+	runtimeClient "github/nallanos/fire2/internal/packages/runtime"
 )
 
 type WorkerStatus string
@@ -21,6 +22,7 @@ type Worker struct {
 	Status            WorkerStatus
 	Budget            Worker_Budget
 	Capacity          int
+	FencingToken      int64
 	Last_heartbeat    time.Time
 	running_sandboxes int
 	cpu_usage         int
@@ -36,22 +38,24 @@ type Worker_Budget struct {
 // runtime metrics that are unexported on Worker. Used by the orchestrator to
 // construct a fully-populated Worker for upsert without exposing internals.
 type HeartbeatParams struct {
-	ID        string
-	Status    WorkerStatus
-	Address   string
-	Port      int
-	Capacity  int
-	CpuBudget int
-	MemBudget int
-	CpuUsage  int
-	MemUsage  int
+	ID           string
+	Status       WorkerStatus
+	Address      string
+	Port         int
+	Capacity     int
+	CpuBudget    int
+	MemBudget    int
+	CpuUsage     int
+	MemUsage     int
+	FencingToken int64
 }
 
 type WorkerService struct {
 	orchestratorClient orchestratorv1.OrchestratorServiceClient
 
-	mu     sync.Mutex
-	worker Worker
+	mu          sync.Mutex
+	heartbeatMu sync.Mutex
+	worker      Worker
 	// map of firecrackerClient *runtime.Client
 	runningSandboxes map[string]*runtimeClient.Client
 
@@ -70,15 +74,16 @@ type CreateSandboxInput struct {
 	PreviewURL string
 }
 
-// NewWorkerFromHeartbeat builds a Worker ready for repo.Update / repo.Create
+// NewWorkerFromHeartbeat builds a Worker ready for repo.Register or repo.Update
 // from heartbeat params received by the orchestrator.
 func NewWorkerFromHeartbeat(p HeartbeatParams) Worker {
 	return Worker{
-		ID:       p.ID,
-		Status:   p.Status,
-		Address:  p.Address,
-		Port:     p.Port,
-		Capacity: p.Capacity,
+		ID:           p.ID,
+		Status:       p.Status,
+		Address:      p.Address,
+		Port:         p.Port,
+		Capacity:     p.Capacity,
+		FencingToken: p.FencingToken,
 		Budget: Worker_Budget{
 			Cpu_budget: p.CpuBudget,
 			Mem_budget: p.MemBudget,

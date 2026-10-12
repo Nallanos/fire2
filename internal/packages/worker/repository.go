@@ -11,10 +11,12 @@ import (
 )
 
 var ErrNotFound = errors.New("worker not found")
+var ErrFenced = errors.New("worker fencing token is no longer current")
 
 // Repository is the storage interface for worker rows (used by the orchestrator only).
 type Repository interface {
 	Create(ctx context.Context, w Worker) (Worker, error)
+	Register(ctx context.Context, w Worker) (Worker, error)
 	Get(ctx context.Context, id string) (Worker, error)
 	Update(ctx context.Context, w Worker) (Worker, error)
 	List(ctx context.Context) ([]Worker, error)
@@ -30,7 +32,7 @@ func NewPostgresRepository(db pgxdb.DBTX) *PostgresRepository {
 	return &PostgresRepository{db: db}
 }
 
-const workerColumns = `id, status, address, capacity, port, cpu_budget, mem_budget, cpu_usage, mem_usage, last_heartbeat`
+const workerColumns = `id, status, address, capacity, port, cpu_budget, mem_budget, cpu_usage, mem_usage, last_heartbeat, fencing_token`
 
 // nullablePort maps the in-memory port (0 = not yet reported) to a value the
 // driver writes as SQL NULL, keeping the hardcoded-default-port logic out of
@@ -50,7 +52,7 @@ func scanWorker(row pgx.Row) (Worker, error) {
 		&w.ID, &w.Status, &w.Address, &w.Capacity, &port,
 		&w.Budget.Cpu_budget, &w.Budget.Mem_budget,
 		&cpuUsage, &memUsage,
-		&w.Last_heartbeat,
+		&w.Last_heartbeat, &w.FencingToken,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -68,8 +70,8 @@ func scanWorker(row pgx.Row) (Worker, error) {
 
 func (r *PostgresRepository) Create(ctx context.Context, w Worker) (Worker, error) {
 	const q = `
-		INSERT INTO worker (id, status, address, capacity, port, cpu_budget, mem_budget, cpu_usage, mem_usage, last_heartbeat)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		INSERT INTO worker (id, status, address, capacity, port, cpu_budget, mem_budget, cpu_usage, mem_usage, last_heartbeat, fencing_token)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING ` + workerColumns
 
 	if w.Last_heartbeat.IsZero() {
@@ -78,9 +80,39 @@ func (r *PostgresRepository) Create(ctx context.Context, w Worker) (Worker, erro
 	row := r.db.QueryRow(ctx, q,
 		w.ID, string(w.Status), w.Address, w.Capacity, nullablePort(w.Port),
 		w.Budget.Cpu_budget, w.Budget.Mem_budget,
-		w.cpu_usage, w.mem_usage, w.Last_heartbeat,
+		w.cpu_usage, w.mem_usage, w.Last_heartbeat, w.FencingToken,
 	)
 	return scanWorker(row)
+}
+
+// Register atomically claims a new fencing token for this worker ID. A new
+// process starts at token 1; each replacement advances the persisted token so
+// heartbeats from an older process can no longer update the row.
+func (r *PostgresRepository) Register(ctx context.Context, w Worker) (Worker, error) {
+	const q = `
+		INSERT INTO worker (id, status, address, capacity, port, cpu_budget, mem_budget, cpu_usage, mem_usage, last_heartbeat, fencing_token)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1)
+		ON CONFLICT (id) DO UPDATE SET
+			status = EXCLUDED.status,
+			address = EXCLUDED.address,
+			capacity = EXCLUDED.capacity,
+			port = EXCLUDED.port,
+			cpu_budget = EXCLUDED.cpu_budget,
+			mem_budget = EXCLUDED.mem_budget,
+			cpu_usage = EXCLUDED.cpu_usage,
+			mem_usage = EXCLUDED.mem_usage,
+			last_heartbeat = EXCLUDED.last_heartbeat,
+			fencing_token = worker.fencing_token + 1
+		RETURNING ` + workerColumns
+
+	if w.Last_heartbeat.IsZero() {
+		w.Last_heartbeat = time.Now().UTC()
+	}
+	return scanWorker(r.db.QueryRow(ctx, q,
+		w.ID, string(w.Status), w.Address, w.Capacity, nullablePort(w.Port),
+		w.Budget.Cpu_budget, w.Budget.Mem_budget,
+		w.cpu_usage, w.mem_usage, w.Last_heartbeat,
+	))
 }
 
 func (r *PostgresRepository) Get(ctx context.Context, id string) (Worker, error) {
@@ -93,7 +125,7 @@ func (r *PostgresRepository) Update(ctx context.Context, w Worker) (Worker, erro
 		UPDATE worker
 		SET status = $2, address = $3, capacity = $4, port = $5,
 		    cpu_budget = $6, mem_budget = $7, cpu_usage = $8, mem_usage = $9, last_heartbeat = $10
-		WHERE id = $1
+		WHERE id = $1 AND fencing_token = $11
 		RETURNING ` + workerColumns
 
 	if w.Last_heartbeat.IsZero() {
@@ -102,12 +134,12 @@ func (r *PostgresRepository) Update(ctx context.Context, w Worker) (Worker, erro
 	row := r.db.QueryRow(ctx, q,
 		w.ID, string(w.Status), w.Address, w.Capacity, nullablePort(w.Port),
 		w.Budget.Cpu_budget, w.Budget.Mem_budget,
-		w.cpu_usage, w.mem_usage, w.Last_heartbeat,
+		w.cpu_usage, w.mem_usage, w.Last_heartbeat, w.FencingToken,
 	)
 	updated, err := scanWorker(row)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Worker{}, ErrNotFound
+		if errors.Is(err, ErrNotFound) {
+			return Worker{}, ErrFenced
 		}
 		return Worker{}, err
 	}
@@ -150,22 +182,10 @@ func (r *PostgresRepository) List(ctx context.Context) ([]Worker, error) {
 
 	var workers []Worker
 	for rows.Next() {
-		var w Worker
-		var cpuUsage, memUsage int
-		var port *int
-		if err := rows.Scan(
-			&w.ID, &w.Status, &w.Address, &w.Capacity, &port,
-			&w.Budget.Cpu_budget, &w.Budget.Mem_budget,
-			&cpuUsage, &memUsage,
-			&w.Last_heartbeat,
-		); err != nil {
+		w, err := scanWorker(rows)
+		if err != nil {
 			return nil, err
 		}
-		if port != nil {
-			w.Port = *port
-		}
-		w.cpu_usage = cpuUsage
-		w.mem_usage = memUsage
 		workers = append(workers, w)
 	}
 	return workers, rows.Err()
@@ -181,22 +201,10 @@ func (r *PostgresRepository) ListActive(ctx context.Context) ([]Worker, error) {
 
 	var workers []Worker
 	for rows.Next() {
-		var w Worker
-		var cpuUsage, memUsage int
-		var port *int
-		if err := rows.Scan(
-			&w.ID, &w.Status, &w.Address, &w.Capacity, &port,
-			&w.Budget.Cpu_budget, &w.Budget.Mem_budget,
-			&cpuUsage, &memUsage,
-			&w.Last_heartbeat,
-		); err != nil {
+		w, err := scanWorker(rows)
+		if err != nil {
 			return nil, err
 		}
-		if port != nil {
-			w.Port = *port
-		}
-		w.cpu_usage = cpuUsage
-		w.mem_usage = memUsage
 		workers = append(workers, w)
 	}
 	return workers, rows.Err()
