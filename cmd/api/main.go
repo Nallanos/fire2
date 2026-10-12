@@ -46,11 +46,14 @@ func main() {
 	river.AddWorker(workers, orchestrator.NewCreateSandboxWorker(pool, sandboxRepo, workerRepo))
 	river.AddWorker(workers, orchestrator.NewCleanupSandboxWorker(sandboxRepo, workerRepo))
 	river.AddWorker(workers, orchestrator.NewReapWorkersWorker(workerRepo, cfg.HeartbeatTimeout))
+	river.AddWorker(workers, orchestrator.NewReapSandboxWorker(sandboxRepo, pool, cfg.SandboxLivenessTimeout))
+	river.AddWorker(workers, orchestrator.NewRemoveOrphanWorker(workerRepo))
 
 	riverClient, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues: map[string]river.QueueConfig{
-			river.QueueDefault: {MaxWorkers: 10},
-			"cleanup":          {MaxWorkers: 5},
+			river.QueueDefault:            {MaxWorkers: 10},
+			"cleanup":                     {MaxWorkers: 5},
+			orchestrator.ReapSandboxQueue: {MaxWorkers: 1},
 		},
 		Workers:     workers,
 		MaxAttempts: 5,
@@ -59,6 +62,13 @@ func main() {
 			river.NewPeriodicJob(
 				river.PeriodicInterval(cfg.ReaperInterval),
 				func() (river.JobArgs, *river.InsertOpts) { return orchestrator.ReapWorkersArgs{}, nil },
+				&river.PeriodicJobOpts{RunOnStart: true},
+			),
+			river.NewPeriodicJob(
+				river.PeriodicInterval(cfg.SandboxReaperInterval),
+				func() (river.JobArgs, *river.InsertOpts) {
+					return orchestrator.ReapSandboxArgs{}, &river.InsertOpts{Queue: orchestrator.ReapSandboxQueue}
+				},
 				&river.PeriodicJobOpts{RunOnStart: true},
 			),
 		},
@@ -95,7 +105,9 @@ func main() {
 		grpcAddr := cfg.OrchestratorGRPCBindHost + ":" + cfg.OrchestratorGRPCPort
 		log.Printf("orchestrator gRPC listening on %s", grpcAddr)
 		grpcErrCh <- orchestrator.ServeEventGRPC(grpcAddr,
-			orchestrator.NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo))
+			orchestrator.NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo,
+				orchestrator.WithTransactions(pool),
+				orchestrator.WithRiverClient(riverClient)))
 	}()
 
 	sigCh := make(chan os.Signal, 1)

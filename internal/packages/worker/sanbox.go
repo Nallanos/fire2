@@ -10,6 +10,10 @@ import (
 	"path/filepath"
 )
 
+// ErrSandboxNotFound is returned by RemoveSandbox when the worker does not
+// track the sandbox (never created here, or already removed).
+var ErrSandboxNotFound = errors.New("sandbox not found on worker")
+
 // CreateSandbox starts a container for the sandbox. It is idempotent: if a container
 // with this sandbox ID already exists it is reused; duplicate calls for the same ID
 // don't increment the running set or capacity count.
@@ -126,7 +130,7 @@ func (w *WorkerService) RemoveSandbox(ctx context.Context, sandboxID string) err
 	if client == nil {
 		delete(w.deletingSandboxes, sandboxID)
 		w.mu.Unlock()
-		return fmt.Errorf("sandbox %s is not running", sandboxID)
+		return fmt.Errorf("%w: sandbox %s is not running", ErrSandboxNotFound, sandboxID)
 	}
 	w.mu.Unlock()
 

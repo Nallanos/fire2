@@ -24,6 +24,18 @@ message WorkerHeartbeat {
   int32  cpu_usage  = 8;
   int32  mem_usage  = 9;
   int64  fencing_token = 10;
+  // inventory_complete distinguishes an empty inventory (the worker hosts no
+  // sandbox) from an absent one (the worker did not report any). The
+  // orchestrator only reconciles sandboxes when it is true.
+  bool   inventory_complete = 11;
+  repeated SandboxInventoryItem sandboxes = 12;
+}
+
+// SandboxInventoryItem is one sandbox currently hosted by the reporting worker.
+message SandboxInventoryItem {
+  string sandbox_id = 1;
+  // Instance state, same values as SandboxEvent.state.
+  string state = 2;
 }
 
 message SandboxEvent {
@@ -36,6 +48,9 @@ message SandboxEvent {
   // ("Not started" | "Running" | "Paused").
   string state = 5;
   google.protobuf.Timestamp occurred_at = 9;
+  // fencing_token identifies the worker incarnation that emitted the event.
+  // Events from a superseded incarnation are rejected.
+  int64 fencing_token = 10;
 }
 
 message WorkerRegistration {
