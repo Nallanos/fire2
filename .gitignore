@@ -15,6 +15,13 @@ docs/.obsidian/
 # Environment
 .env
 
+# Local dev stack logs
+.sandbox/
+
+# macOS
+.DS_Store
+
+
 # Never-expiring dev/prod session tokens (see make sandbox-token / cmd/devtoken)
 .sandbox/token-prod
 .sandbox/token-local
