@@ -1,0 +1,55 @@
+---
+# Runs before the new binary is deployed: the API must never start against a
+# schema older than the code expects (migration 009 renamed event_type to
+# state and dropped columns, so old and new binaries cannot share a schema).
+- name: Validate host architecture for the pinned dbmate build
+  ansible.builtin.assert:
+    that:
+      - ansible_architecture == "x86_64"
+    fail_msg: "dbmate_sha256 pins the linux-amd64 build; got {{ ansible_architecture }}"
+
+- name: Install dbmate
+  ansible.builtin.get_url:
+    url: "https://github.com/amacneil/dbmate/releases/download/v{{ dbmate_version }}/dbmate-linux-amd64"
+    dest: "{{ dbmate_bin }}"
+    checksum: "sha256:{{ dbmate_sha256 }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Sync database migrations
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../internal/db/migrations/"
+    dest: "{{ fire2_install_dir }}/migrations/"
+    owner: "{{ fire2_user }}"
+    group: "{{ fire2_group }}"
+    mode: "0644"
+    directory_mode: "0755"
+
+- name: Apply pending database migrations
+  ansible.builtin.command: >-
+    {{ dbmate_bin }} --migrations-dir {{ fire2_install_dir }}/migrations
+    --no-dump-schema up
+  environment:
+    DATABASE_URL: "{{ orchestrator_database_url }}"
+  register: dbmate_up
+  changed_when: "'Applying:' in dbmate_up.stdout"
+
+# In --check mode nothing was installed or applied, so there is nothing
+# meaningful to read or assert.
+- name: Read migration status
+  when: not ansible_check_mode
+  ansible.builtin.command: >-
+    {{ dbmate_bin }} --migrations-dir {{ fire2_install_dir }}/migrations
+    status
+  environment:
+    DATABASE_URL: "{{ orchestrator_database_url }}"
+  register: dbmate_status
+  changed_when: false
+
+- name: Assert no migration is left pending
+  when: not ansible_check_mode
+  ansible.builtin.assert:
+    that:
+      - "'Pending: 0' in dbmate_status.stdout"
+    fail_msg: "Migrations still pending after dbmate up: {{ dbmate_status.stdout_lines | select('search', 'Pending|Applied') | list }}"

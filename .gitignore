@@ -10,8 +10,9 @@
 
 # Editor
 .vscode/
+docs/.obsidian/
 
-# Environment 
+# Environment
 .env
 
 # Local dev stack logs
@@ -19,3 +20,10 @@
 
 # macOS
 .DS_Store
+
+
+# Never-expiring dev/prod session tokens (see make sandbox-token / cmd/devtoken)
+.sandbox/token-prod
+.sandbox/token-local
+.sandbox/*.log
+.claude/settings.json

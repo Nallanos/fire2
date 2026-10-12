@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -10,17 +9,14 @@ import (
 	"github/nallanos/fire2/internal/packages/pgxdb"
 )
 
-// SandboxEvent is the domain type for a recorded Docker event.
+// SandboxEvent is the domain type for a recorded Firecracker instance-state
+// sample (see runtime.Client.GetMetrics / firecracker-go-sdk's InstanceInfo).
 type SandboxEvent struct {
-	ID          string
-	SandboxID   string
-	ContainerID string
-	WorkerID    string
-	EventType   string
-	Action      string
-	ActorID     string
-	Attributes  json.RawMessage
-	OccurredAt  time.Time
+	ID         string
+	SandboxID  string
+	WorkerID   string
+	State      string
+	OccurredAt time.Time
 }
 
 // EventRepository stores sandbox events received from workers.
@@ -43,19 +39,17 @@ func (r *postgresEventRepository) WithTx(tx pgx.Tx) EventRepository {
 
 func (r *postgresEventRepository) CreateSandboxEvent(ctx context.Context, e SandboxEvent) (SandboxEvent, error) {
 	const q = `
-		INSERT INTO sandbox_events (id, sandbox_id, container_id, worker_id, event_type, action, actor_id, attributes, occurred_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		RETURNING id, sandbox_id, container_id, worker_id, event_type, action, actor_id, attributes, occurred_at`
+		INSERT INTO sandbox_events (id, sandbox_id, worker_id, state, occurred_at)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, sandbox_id, worker_id, state, occurred_at`
 
 	row := r.db.QueryRow(ctx, q,
-		e.ID, e.SandboxID, e.ContainerID, e.WorkerID,
-		e.EventType, e.Action, e.ActorID, e.Attributes, e.OccurredAt,
+		e.ID, e.SandboxID, e.WorkerID, e.State, e.OccurredAt,
 	)
 
 	var out SandboxEvent
 	err := row.Scan(
-		&out.ID, &out.SandboxID, &out.ContainerID, &out.WorkerID,
-		&out.EventType, &out.Action, &out.ActorID, &out.Attributes, &out.OccurredAt,
+		&out.ID, &out.SandboxID, &out.WorkerID, &out.State, &out.OccurredAt,
 	)
 	return out, err
 }

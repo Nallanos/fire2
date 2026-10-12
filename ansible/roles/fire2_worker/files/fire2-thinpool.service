@@ -1,0 +1,18 @@
+[Unit]
+Description=fire2 dm-thin pool (sandbox root drives)
+Documentation=https://github.com/nallanos/fire2
+# fire2-worker@ units Require this one, so restarting it restarts every
+# worker, and a restarting worker reaps all its VMs. There is never a reason
+# to: once the pool is up, fire2-thinpool-up is a no-op.
+RefuseManualStop=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/fire2-thinpool-up
+# No ExecStop on purpose: tearing the pool down would pull the root drive out
+# from under running VMs. It goes away with the host; its metadata is
+# transactional and the backing files are re-attached on the next boot.
+
+[Install]
+WantedBy=multi-user.target

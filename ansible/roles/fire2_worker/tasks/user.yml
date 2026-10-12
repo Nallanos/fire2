@@ -14,16 +14,9 @@
     create_home: false
     state: present
 
-- name: Add fire2 user to docker group
-  ansible.builtin.user:
-    name: "{{ fire2_user }}"
-    groups: docker
-    append: true
-
 - name: Add fire2 user to kvm group
   # Required for the worker (running as fire2, not root) to open /dev/kvm
-  # when it spawns Firecracker processes. append:true so this doesn't wipe
-  # the docker group membership added above.
+  # when it spawns Firecracker processes.
   ansible.builtin.user:
     name: "{{ fire2_user }}"
     groups: kvm

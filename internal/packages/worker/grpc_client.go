@@ -44,7 +44,7 @@ func (s *WorkerGRPCServer) CreateSandbox(ctx context.Context, req *workerv1.Crea
 }
 
 func (s *WorkerGRPCServer) StopSandbox(ctx context.Context, req *workerv1.StopSandboxRequest) (*workerv1.StopSandboxResponse, error) {
-	if err := s.service.StopSandbox(ctx, req.GetContainerId()); err != nil {
+	if err := s.service.StopSandbox(req.GetContainerId()); err != nil {
 		return nil, err
 	}
 
@@ -101,12 +101,14 @@ func ServeGRPC(address string, srv workerv1.WorkerServiceServer, opts ...grpc.Se
 	grpcServer := grpc.NewServer(opts...)
 	workerv1.RegisterWorkerServiceServer(grpcServer, srv)
 
+	log.Printf("worker gRPC server started on %s", lis.Addr().String())
 	if workerSrv, ok := srv.(*WorkerGRPCServer); ok {
 		workerSrv.service.SetListenPort(boundPort)
 
 		heartbeatCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
+		log.Printf("starting heartbeat loop with interval: %s", heartbeatIntervalFromEnv())
 		go workerSrv.service.RunHeartbeat(heartbeatCtx, heartbeatIntervalFromEnv())
 		return grpcServer.Serve(lis)
 	}

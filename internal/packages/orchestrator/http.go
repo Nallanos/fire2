@@ -1,11 +1,13 @@
 package orchestrator
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -19,6 +21,9 @@ import (
 	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
 	workerpkg "github/nallanos/fire2/internal/packages/worker"
 )
+
+// listWorkerTimeout bounds how long listSandboxes waits on any single worker.
+const listWorkerTimeout = 3 * time.Second
 
 type HTTPHandlers struct {
 	pool        *pgxpool.Pool
@@ -203,6 +208,11 @@ func (h *HTTPHandlers) createSandbox(w http.ResponseWriter, r *http.Request) {
 				_ = json.NewEncoder(w).Encode(sbx)
 				return
 			case river.EventKindJobCancelled:
+				if jobFailedClusterFull(event.Job) {
+					w.Header().Set("Retry-After", "30")
+					http.Error(w, "no worker capacity available", http.StatusServiceUnavailable)
+					return
+				}
 				http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusBadGateway)
 				return
 			case river.EventKindJobFailed:
@@ -214,6 +224,16 @@ func (h *HTTPHandlers) createSandbox(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+// jobFailedClusterFull reports whether the job's last attempt failed because
+// the scheduler found every active worker saturated. River only keeps error
+// strings on the job row, so the match is on ErrClusterFull's message.
+func jobFailedClusterFull(job *rivertype.JobRow) bool {
+	if job == nil || len(job.Errors) == 0 {
+		return false
+	}
+	return strings.Contains(job.Errors[len(job.Errors)-1].Error, ErrClusterFull.Error())
 }
 
 func (h *HTTPHandlers) getSandboxByID(w http.ResponseWriter, r *http.Request) {
@@ -257,43 +277,60 @@ func (h *HTTPHandlers) listSandboxes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// List all workers in the database
-	workers, err := h.workerRepo.List(r.Context())
+	// List all active workers in the database
+	workers, err := h.workerRepo.ListActive(r.Context())
 	if err != nil {
 		log.Printf("list workers failed: %v", err)
 		http.Error(w, "failed to list workers", http.StatusInternalServerError)
 		return
 	}
 
-	// Collect running sandboxes from all workers
-	sandboxes := make([]sandboxpkg.Sandbox, 0)
+	// Collect running sandboxes from all active workers
+	// Workers are queried in parallel, each with its own timeout, so one slow
+	// or unreachable worker can't stall the whole listing. Each goroutine
+	// writes only to its own slot in perWorker, so no mutex is needed.
+	perWorker := make([][]sandboxpkg.Sandbox, len(workers))
+	var wg sync.WaitGroup
 
-	for _, worker := range workers {
+	for i, worker := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 
-		client, err := NewClient(r.Context(), normalizeWorkerAddress(worker.Address, int32(worker.Port)))
-		if err != nil {
-			log.Printf("failed to create gRPC client for worker %s: %v", worker.ID, err)
-			continue
-		}
-		defer client.Close()
+			ctx, cancel := context.WithTimeout(r.Context(), listWorkerTimeout)
+			defer cancel()
 
-		sbxResp, err := client.ListRunningSandboxes(r.Context(), &workerv1.ListRunningSandboxesRequest{})
-		if err != nil {
-			log.Printf("failed to list running sandboxes for worker %s: %v", worker.ID, err)
-			continue
-		}
-
-		for _, sbx := range sbxResp.ContainerIds {
-			sandbox, err := h.sandboxRepo.GetByID(r.Context(), sbx)
+			client, err := NewClient(ctx, normalizeWorkerAddress(worker.Address, int32(worker.Port)))
 			if err != nil {
-				log.Printf("failed to fetch sandbox details for ID %s: %v", sbx, err)
-				continue
+				log.Printf("failed to create gRPC client for worker %s: %v", worker.ID, err)
+				return
 			}
-			if sandbox.UserID == nil || *sandbox.UserID != user.ID {
-				continue
+			defer client.Close()
+
+			sbxResp, err := client.ListRunningSandboxes(ctx, &workerv1.ListRunningSandboxesRequest{})
+			if err != nil {
+				log.Printf("failed to list running sandboxes for worker %s: %v", worker.ID, err)
+				return
 			}
-			sandboxes = append(sandboxes, sandbox)
-		}
+
+			for _, sbx := range sbxResp.ContainerIds {
+				sandbox, err := h.sandboxRepo.GetByID(ctx, sbx)
+				if err != nil {
+					log.Printf("failed to fetch sandbox details for ID %s: %v", sbx, err)
+					continue
+				}
+				if sandbox.UserID == nil || *sandbox.UserID != user.ID {
+					continue
+				}
+				perWorker[i] = append(perWorker[i], sandbox)
+			}
+		}()
+	}
+	wg.Wait()
+
+	sandboxes := make([]sandboxpkg.Sandbox, 0)
+	for _, s := range perWorker {
+		sandboxes = append(sandboxes, s...)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -33,6 +33,9 @@ func (f *fakeWorkerRepo) Update(ctx context.Context, w workerpkg.Worker) (worker
 func (f *fakeWorkerRepo) List(ctx context.Context) ([]workerpkg.Worker, error) {
 	return nil, nil
 }
+func (f *fakeWorkerRepo) ListActive(ctx context.Context) ([]workerpkg.Worker, error) {
+	return nil, nil
+}
 func (f *fakeWorkerRepo) MarkStaleInactive(ctx context.Context, timeout time.Duration) (int64, error) {
 	f.calls++
 	f.gotTimeout = timeout

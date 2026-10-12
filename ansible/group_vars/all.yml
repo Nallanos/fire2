@@ -1,0 +1,12 @@
+---
+# Shared by every host (workers and orchestrator alike).
+
+# Lets `tailscale up` in each role's tasks/tailscale.yml join new or rebuilt
+# hosts non-interactively, instead of SSHing in by hand each time. Never
+# commit a real key: this reads it from the TAILSCALE_AUTHKEY env var (same
+# pattern as DATABASE_URL — put it in your local .env, which is gitignored).
+# Generate one at https://login.tailscale.com/admin/settings/keys with:
+# Reusable (every host shares it), Pre-authorized (so the join doesn't sit
+# waiting for manual approval), and Ephemeral OFF (hosts must survive
+# reboots without falling off the tailnet).
+tailscale_authkey: "{{ lookup('env', 'TAILSCALE_AUTHKEY') }}"

@@ -12,13 +12,11 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -46,8 +44,10 @@ func run() error {
 	}
 
 	sandboxID := "smoke-" + uuid.NewString()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	fireThinPath := os.Getenv("FIRE2_THIN_PATH")
+	if fireThinPath == "" {
+		return errors.New("FIRE2_THIN_PATH is not set")
+	}
 
 	client, err := runtime.NewClient(sandboxID)
 	if err != nil {
@@ -57,27 +57,28 @@ func run() error {
 	// WorkerService.CreateSandbox's rollback does, and keeps repeated runs
 	// of this command from littering the host.
 	defer func() {
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer stopCancel()
-		if err := client.Stop(stopCtx); err != nil {
+		if err := client.Stop(); err != nil {
 			log.Printf("cleanup: stop: %v", err)
+		}
+		if err := runtime.RemoveSandboxVolume(fireThinPath, sandboxID); err != nil {
+			log.Printf("cleanup: remove volume: %v", err)
 		}
 		if err := os.RemoveAll(client.Dir); err != nil && !os.IsNotExist(err) {
 			log.Printf("cleanup: remove dir: %v", err)
 		}
 	}()
 
-	if err := client.CreateMachine(ctx, runtime.CreateVmRequest{
-		KernelPath: kernelPath,
-		RootFSPath: rootfsPath,
-		VcpuCount:  1,
-		MemSizeMib: 256,
-		BootArgs:   "console=ttyS0 reboot=k panic=1 pci=off",
+	if err := client.CreateMachine(runtime.CreateVmRequest{
+		KernelPath:   kernelPath,
+		FireThinPath: fireThinPath,
+		VcpuCount:    1,
+		MemSizeMib:   256,
+		BootArgs:     "console=ttyS0 reboot=k panic=1 pci=off",
 	}); err != nil {
 		return fmt.Errorf("CreateMachine: %w", err)
 	}
 
-	if err := client.Start(ctx); err != nil {
+	if err := client.Start(); err != nil {
 		return fmt.Errorf("Start: %w", err)
 	}
 

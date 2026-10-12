@@ -77,7 +77,7 @@ func (w *CreateSandboxWorker) Work(ctx context.Context, job *river.Job[CreateSan
 	case sandboxpkg.StatusScheduling:
 		return w.stepAssign(ctx, sbx, isFinalAttempt, job)
 	case sandboxpkg.StatusAssigned:
-		return w.stepStartContainer(ctx, sbx, isFinalAttempt, job)
+		return w.stepStartSandbox(ctx, sbx, isFinalAttempt, job)
 	case sandboxpkg.StatusStarting:
 		return w.stepAcknowledge(ctx, sandboxID, isFinalAttempt, job)
 	case sandboxpkg.StatusRunning,
@@ -113,7 +113,7 @@ func (w *CreateSandboxWorker) stepScheduling(ctx context.Context, sandboxID stri
 func (w *CreateSandboxWorker) stepAssign(ctx context.Context, sbx sandboxpkg.Sandbox, isFinal bool, job *river.Job[CreateSandboxArgs]) error {
 	if sbx.WorkerID != nil {
 		// Already assigned — skip straight to container start.
-		return w.stepStartContainer(ctx, sbx, isFinal, job)
+		return w.stepStartSandbox(ctx, sbx, isFinal, job)
 	}
 
 	workers, err := w.workerRepo.List(ctx)
@@ -123,6 +123,11 @@ func (w *CreateSandboxWorker) stepAssign(ctx context.Context, sbx sandboxpkg.San
 
 	candidates := buildCandidates(ctx, workers)
 	chosen, err := w.scheduler.ChooseLeastUsedWorker(candidates)
+	if errors.Is(err, ErrClusterFull) {
+		// Retrying with backoff won't free capacity fast enough to be useful
+		// and the HTTP caller is waiting: fail fast, treat as final.
+		return w.maybeCleanup(ctx, sbx.ID, true, job, fmt.Errorf("choose worker: %w", err))
+	}
 	if err != nil {
 		return w.maybeCleanup(ctx, sbx.ID, isFinal, job, fmt.Errorf("choose worker: %w", err))
 	}
@@ -136,14 +141,17 @@ func (w *CreateSandboxWorker) stepAssign(ctx context.Context, sbx sandboxpkg.San
 		return nil
 	}
 
-	return w.stepStartContainer(ctx, assigned, isFinal, job)
+	return w.stepStartSandbox(ctx, assigned, isFinal, job)
 }
 
-// stepStartContainer calls the worker gRPC and transitions assigned → starting.
-func (w *CreateSandboxWorker) stepStartContainer(ctx context.Context, sbx sandboxpkg.Sandbox, isFinal bool, job *river.Job[CreateSandboxArgs]) error {
+// stepStartSandbox calls the worker gRPC and transitions assigned → starting.
+func (w *CreateSandboxWorker) stepStartSandbox(ctx context.Context, sbx sandboxpkg.Sandbox, isFinal bool, job *river.Job[CreateSandboxArgs]) error {
 	if sbx.WorkerID == nil {
 		return w.maybeCleanup(ctx, sbx.ID, isFinal, job, errors.New("sandbox has no worker_id at assigned step"))
 	}
+
+	// Start the timer to measure how long it takes to start the sandbox. This is useful for monitoring and debugging.
+	startTime := time.Now()
 
 	// Resolve full address from worker row.
 	worker, err := w.workerRepo.Get(ctx, *sbx.WorkerID)
@@ -171,6 +179,9 @@ func (w *CreateSandboxWorker) stepStartContainer(ctx context.Context, sbx sandbo
 	if grpcErr != nil {
 		return w.maybeCleanup(ctx, sbx.ID, isFinal, job, fmt.Errorf("worker CreateSandbox: %w", grpcErr))
 	}
+
+	// Measure the time it takes to start the sandbox.
+	log.Printf("create_sandbox: sandbox=%s started in %v", sbx.ID, time.Since(startTime))
 
 	_, n, err := w.sandboxRepo.UpdateStatus(ctx, sbx.ID, sandboxpkg.StatusStarting, sandboxpkg.StatusAssigned)
 	if err != nil {

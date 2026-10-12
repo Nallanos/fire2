@@ -4,6 +4,9 @@
     daemon_reload: true
   notify: restart fire2-worker instances
 
+- name: reload udev rules
+  ansible.builtin.command: udevadm control --reload-rules
+
 - name: restart fire2-worker instances
   ansible.builtin.systemd:
     name: "fire2-worker@{{ item }}"

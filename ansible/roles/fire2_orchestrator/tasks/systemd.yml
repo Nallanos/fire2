@@ -1,0 +1,27 @@
+---
+- name: Deploy orchestrator environment file
+  ansible.builtin.template:
+    src: api.env.j2
+    dest: "{{ fire2_install_dir }}/api.env"
+    owner: "{{ fire2_user }}"
+    group: "{{ fire2_group }}"
+    mode: "0640"
+  notify: restart fire2-api
+
+- name: Deploy systemd unit
+  ansible.builtin.template:
+    src: fire2-api.service.j2
+    dest: /etc/systemd/system/fire2-api.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd
+
+- name: Ensure fire2-api is started and enabled
+  ansible.builtin.systemd:
+    name: fire2-api
+    state: started
+    enabled: true
+
+- name: Flush handlers before finishing
+  ansible.builtin.meta: flush_handlers

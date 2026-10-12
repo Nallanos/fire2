@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Activates the fire2 dm-thin pool. Run at every boot by
+# fire2-thinpool.service; a no-op when the pool is already active.
+#
+# Device-mapper tables and loop devices don't survive a reboot, but the
+# pool's content (the metadata + data files) does: this re-attaches the files
+# and re-creates the pool table on top of them. The metadata device is zeroed
+# only on the very first activation — zeroing it again wipes the whole pool.
+set -euo pipefail
+# shellcheck source=/dev/null
+source /etc/fire2/thinpool.conf
+
+DATA=$POOL_DIR/data
+META=$POOL_DIR/metadata
+# Written once the pool has been created on these files. Delete it only to
+# deliberately start over from an empty pool.
+INITIALIZED=$POOL_DIR/.initialized
+
+if dmsetup info "$POOL_NAME" &>/dev/null; then
+	echo "$POOL_NAME already active"
+	exit 0
+fi
+
+modprobe dm_thin_pool
+install -d -m 0700 "$POOL_DIR"
+# ">" only ever grows the file. dm-thin picks up a bigger data device when the
+# pool table is loaded, i.e. here, on the next boot.
+truncate -s ">$DATA_SIZE" "$DATA"
+[[ -e $META ]] || truncate -s "$METADATA_SIZE" "$META"
+
+# Reuses the loop device left attached by an earlier, interrupted run.
+attach() {
+	local file=$1 dev
+	shift
+	dev=$(losetup -l -j "$file" -n -O NAME | head -n1)
+	if [[ -n $dev ]]; then
+		losetup -c "$dev" # the file may have grown since
+	else
+		dev=$(losetup --find --show "$@" "$file")
+	fi
+	echo "$dev"
+}
+data_dev=$(attach "$DATA" --direct-io=on)
+meta_dev=$(attach "$META")
+
+stale=""
+if [[ -e $INITIALIZED ]]; then
+	# Refuse to activate damaged metadata; repair by hand with thin_repair.
+	thin_check -q --clear-needs-check-flag "$meta_dev"
+	# No VM survives a reboot, so every sandbox volume still in the pool is
+	# garbage. Collected before activation: the metadata device can only be
+	# read directly while the pool is down.
+	stale=$(thin_dump --skip-mappings "$meta_dev" |
+		sed -n 's/.*<device dev_id="\([0-9]*\)".*/\1/p' |
+		awk -v min="$FIRST_SANDBOX_ID" '$1 >= min')
+else
+	dd if=/dev/zero of="$meta_dev" bs=4096 count=1 conv=fsync status=none
+fi
+
+# error_if_no_space: a full pool fails guest writes right away instead of
+# queueing them for 60s.
+dmsetup create "$POOL_NAME" --table \
+	"0 $(blockdev --getsz "$data_dev") thin-pool $meta_dev $data_dev $BLOCK_SECTORS $LOW_WATER_MARK 1 error_if_no_space"
+touch "$INITIALIZED"
+
+dropped=0
+for id in $stale; do
+	dmsetup message "/dev/mapper/$POOL_NAME" 0 "delete $id"
+	dropped=$((dropped + 1))
+done
+echo "$POOL_NAME active, dropped $dropped stale sandbox volume(s)"

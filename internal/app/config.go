@@ -1,8 +1,11 @@
 package app
 
 import (
+	"log"
 	"os"
 	"time"
+
+	tailscalepkg "github/nallanos/fire2/internal/packages/tailscale"
 )
 
 type Config struct {
@@ -46,11 +49,25 @@ func ConfigFromEnv() Config {
 		orchestratorGRPCPort = "7001"
 	}
 
+	// ORCHESTRATOR_GRPC_BIND_HOST is normally left unset — a static IP baked
+	// into Ansible vars goes stale the moment a host is rebuilt or moved to
+	// a new provider (same fix as cmd/worker). Auto-discover the tailnet IP
+	// instead; the env var remains as an explicit override.
+	bindHost := os.Getenv("ORCHESTRATOR_GRPC_BIND_HOST")
+	if bindHost == "" {
+		if ip, err := tailscalepkg.IPv4(); err == nil {
+			bindHost = ip
+			log.Printf("auto-discovered tailscale address: %s", ip)
+		} else {
+			log.Printf("tailscale address auto-discovery failed, falling back: %v", err)
+		}
+	}
+
 	return Config{
 		Port:                     port,
 		DatabaseURL:              databaseURL,
 		OrchestratorGRPCPort:     orchestratorGRPCPort,
-		OrchestratorGRPCBindHost: os.Getenv("ORCHESTRATOR_GRPC_BIND_HOST"),
+		OrchestratorGRPCBindHost: bindHost,
 		HeartbeatTimeout:         durationFromEnv("HEARTBEAT_TIMEOUT", defaultHeartbeatTimeout),
 		ReaperInterval:           durationFromEnv("REAPER_INTERVAL", defaultReaperInterval),
 	}

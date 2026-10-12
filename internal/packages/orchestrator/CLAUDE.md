@@ -2,14 +2,14 @@
 
 ## Purpose
 
-Coordinates sandbox lifecycle across the API, River job queue, Docker workers, and the event stream. Owns the create-sandbox HTTP handler, both River job workers (create + cleanup), the gRPC event receiver, and the worker-selection scheduler.
+Coordinates sandbox lifecycle across the API, River job queue, Firecracker workers, and the event stream. Owns the create-sandbox HTTP handler, both River job workers (create + cleanup), the gRPC event receiver, and the worker-selection scheduler.
 
 ## Key types
 
 - `HTTPHandlers` — HTTP layer; `createSandbox` handler opens a transaction, creates the sandbox row and the River job atomically.
 - `CreateSandboxWorker` — River worker; drives the sandbox state machine one step per attempt.
 - `CleanupSandboxWorker` — River worker; best-effort container removal then marks sandbox failed.
-- `EventGRPCServer` — receives Docker events from workers; guards status transitions.
+- `EventGRPCServer` — receives Firecracker instance events from workers; guards status transitions.
 - `Scheduler` — weighted random worker selection; `ChooseLeastUsedWorker` returns `ErrNoWorkerCandidates` when no healthy workers exist.
 - `StrongRetryPolicy` — exponential backoff for the default queue (main job).
 
@@ -30,7 +30,12 @@ On the **final attempt**, `maybeCleanup` transitions the sandbox to `cleanup_pen
 ## State ownership rule
 
 - **Job owns** all transitions from `pending` through `running`.
-- **Events own** transitions `starting|running → failed` (die/stop/kill).
+- **Events own** `starting → running` only. Docker's die/stop/kill/oom had no
+  Firecracker equivalent that survived the migration — `statusTransitionForState`
+  (event_grpc.go) has no case for a crashed/exited instance, so there is
+  currently no event-driven `→ failed` transition. A dead sandbox is only
+  caught by missed-heartbeat detection, not this event stream — this is a
+  known gap, not a design choice.
 - **Cleanup job owns** `cleanup_pending → failed`.
 
 Never let two owners race on the same transition. Guards in `UpdateStatus` and `AssignWorker` enforce this at the SQL level.

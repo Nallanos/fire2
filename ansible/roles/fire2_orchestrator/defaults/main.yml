@@ -1,0 +1,25 @@
+---
+fire2_user: fire2
+fire2_group: fire2
+fire2_install_dir: /opt/fire2
+
+# dbmate is installed by tasks/migrate.yml into a root-owned path: root runs
+# it, so it must not live somewhere an unprivileged user can overwrite it.
+# The checksum was computed from the official release asset over HTTPS
+# (trust on first use); bump version and checksum together.
+dbmate_version: "1.16.2"
+dbmate_sha256: "8570066fc8388585e1386d512b50cf2a0c416bbc6eff7cac1c0be6d9885e9519"
+dbmate_bin: /usr/local/bin/dbmate
+
+api_port: 8081
+orchestrator_grpc_port: 7001
+
+# Left empty: the api binary auto-discovers its own Tailscale IP at startup
+# (`tailscale ip -4`, see internal/app/config.go) and uses it to restrict
+# the gRPC listener to the tailnet interface. gRPC uses insecure
+# credentials — never let this fall back to a public interface. Only set
+# this to override the auto-discovered value for a specific host.
+orchestrator_grpc_bind_host: ""
+
+heartbeat_timeout: 15s
+reaper_interval: 10s

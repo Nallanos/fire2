@@ -13,6 +13,11 @@ import (
 
 var ErrNoWorkerCandidates = errors.New("no worker candidates available")
 
+// ErrClusterFull is returned when at least one active worker is reachable but
+// none has CPU and memory budget left. Unlike ErrNoWorkerCandidates, retrying
+// immediately won't help, and callers should surface it as a 503.
+var ErrClusterFull = errors.New("no worker capacity available")
+
 type WorkerCandidate struct {
 	Worker workerpkg.Worker
 	Info   *workerv1.GetWorkerInfoResponse
@@ -38,7 +43,24 @@ func (s *Scheduler) ChooseLeastUsedWorker(candidates []WorkerCandidate) (WorkerC
 		return WorkerCandidate{}, ErrNoWorkerCandidates
 	}
 
-	bestActive, hasActive := s.pickWeightedRandom(candidates, true)
+	// Only consider active workers that still have budget left. If active
+	// workers exist but every one of them is saturated, the fleet is full.
+	hasActiveWorker := false
+	var withCapacity []WorkerCandidate
+	for _, c := range candidates {
+		if c.Info == nil || !isActiveWorker(c) {
+			continue
+		}
+		hasActiveWorker = true
+		if hasCapacity(c.Info) {
+			withCapacity = append(withCapacity, c)
+		}
+	}
+	if hasActiveWorker && len(withCapacity) == 0 {
+		return WorkerCandidate{}, ErrClusterFull
+	}
+
+	bestActive, hasActive := s.pickWeightedRandom(withCapacity, true)
 	if hasActive {
 		return bestActive, nil
 	}
@@ -143,6 +165,13 @@ func (s *Scheduler) WorkerWeight(info *workerv1.GetWorkerInfoResponse) float64 {
 	memLeft := leftRatio(info.GetMemUsage(), info.GetMemBudget())
 
 	return (0.7 * cpuLeft) + (0.3 * memLeft)
+}
+
+// hasCapacity reports whether a worker still has both CPU and memory budget
+// left; either resource being exhausted makes it unable to host a new sandbox.
+func hasCapacity(info *workerv1.GetWorkerInfoResponse) bool {
+	return usageRatio(info.GetCpuUsage(), info.GetCpuBudget()) < 1 &&
+		usageRatio(info.GetMemUsage(), info.GetMemBudget()) < 1
 }
 
 func usageRatio(usage, budget int32) float64 {
