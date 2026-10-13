@@ -28,14 +28,10 @@ message WorkerHeartbeat {
   // sandbox) from an absent one (the worker did not report any). The
   // orchestrator only reconciles sandboxes when it is true.
   bool   inventory_complete = 11;
-  repeated SandboxInventoryItem sandboxes = 12;
-}
-
-// SandboxInventoryItem is one sandbox currently hosted by the reporting worker.
-message SandboxInventoryItem {
-  string sandbox_id = 1;
-  // Instance state, same values as SandboxEvent.state.
-  string state = 2;
+  reserved 12;
+  // sandbox_ids lists every sandbox the worker currently tracks, read from its
+  // in-memory map (no probe of the VMs).
+  repeated string sandbox_ids = 13;
 }
 
 message SandboxEvent {
