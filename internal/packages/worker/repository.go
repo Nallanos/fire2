@@ -22,6 +22,12 @@ type Repository interface {
 	List(ctx context.Context) ([]Worker, error)
 	ListActive(ctx context.Context) ([]Worker, error)
 	MarkStaleInactive(ctx context.Context, timeout time.Duration) (int64, error)
+	// ClaimInventory records that the incarnation identified by token has had its
+	// first complete inventory reconciled. It returns true exactly once per
+	// token, and false if the token is no longer current. Call it in the same
+	// transaction as Update so the worker row stays locked.
+	ClaimInventory(ctx context.Context, id string, token int64) (first bool, err error)
+	WithTx(tx pgx.Tx) Repository
 }
 
 type PostgresRepository struct {
@@ -102,7 +108,8 @@ func (r *PostgresRepository) Register(ctx context.Context, w Worker) (Worker, er
 			cpu_usage = EXCLUDED.cpu_usage,
 			mem_usage = EXCLUDED.mem_usage,
 			last_heartbeat = EXCLUDED.last_heartbeat,
-			fencing_token = worker.fencing_token + 1
+			fencing_token = worker.fencing_token + 1,
+			registered_at = now()
 		RETURNING ` + workerColumns
 
 	if w.Last_heartbeat.IsZero() {
@@ -113,6 +120,20 @@ func (r *PostgresRepository) Register(ctx context.Context, w Worker) (Worker, er
 		w.Budget.Cpu_budget, w.Budget.Mem_budget,
 		w.cpu_usage, w.mem_usage, w.Last_heartbeat,
 	))
+}
+
+func (r *PostgresRepository) WithTx(tx pgx.Tx) Repository {
+	return &PostgresRepository{db: tx}
+}
+
+func (r *PostgresRepository) ClaimInventory(ctx context.Context, id string, token int64) (bool, error) {
+	const q = `UPDATE worker SET inventory_token = $2
+		WHERE id = $1 AND fencing_token = $2 AND inventory_token <> $2`
+	tag, err := r.db.Exec(ctx, q, id, token)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 func (r *PostgresRepository) Get(ctx context.Context, id string) (Worker, error) {

@@ -196,7 +196,7 @@ func TestSandboxRepository_ClearWorker(t *testing.T) {
 	_, err := repo.Create(ctx, Sandbox{
 		ID:        "sbx-b4",
 		Runtime:   "node",
-		Status:    StatusAssigned,
+		Status:    StatusCleanupPending, // ClearWorker only acts from cleanup_pending
 		Image:     "node:20-alpine",
 		Port:      3000,
 		TTL:       3600,

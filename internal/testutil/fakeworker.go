@@ -23,6 +23,9 @@ type FakeWorkerServer struct {
 	// CreateError, if non-nil, is returned from every CreateSandbox call.
 	CreateError error
 
+	removeError error
+	removeCalls map[string]int // sandboxID → number of RemoveSandbox calls
+
 	// InfoResponse is returned from GetWorkerInfo; defaults to a healthy worker with capacity 10.
 	InfoResponse *workerv1.GetWorkerInfoResponse
 }
@@ -31,6 +34,7 @@ type FakeWorkerServer struct {
 func NewFakeWorkerServer(cpuUsage, memUsage int32) *FakeWorkerServer {
 	return &FakeWorkerServer{
 		createCalls: make(map[string]int),
+		removeCalls: make(map[string]int),
 		InfoResponse: &workerv1.GetWorkerInfoResponse{
 			Status:    "active",
 			CpuBudget: 100,
@@ -61,8 +65,29 @@ func (f *FakeWorkerServer) GetWorkerInfo(_ context.Context, _ *workerv1.GetWorke
 	return &workerv1.GetWorkerInfoResponse{Status: "active", CpuBudget: 100, MemBudget: 1000, Capacity: 10}, nil
 }
 
-func (f *FakeWorkerServer) RemoveSandbox(_ context.Context, _ *workerv1.RemoveSandboxRequest) (*workerv1.RemoveSandboxResponse, error) {
+func (f *FakeWorkerServer) RemoveSandbox(_ context.Context, req *workerv1.RemoveSandboxRequest) (*workerv1.RemoveSandboxResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removeCalls[req.GetContainerId()]++
+	if f.removeError != nil {
+		return nil, f.removeError
+	}
 	return &workerv1.RemoveSandboxResponse{}, nil
+}
+
+// SetRemoveError makes every following RemoveSandbox call fail with err; nil
+// makes them succeed again.
+func (f *FakeWorkerServer) SetRemoveError(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removeError = err
+}
+
+// RemoveCallCount returns how many times RemoveSandbox was called for sandboxID.
+func (f *FakeWorkerServer) RemoveCallCount(sandboxID string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.removeCalls[sandboxID]
 }
 
 // CreateCallCount returns how many times CreateSandbox was called for sandboxID.

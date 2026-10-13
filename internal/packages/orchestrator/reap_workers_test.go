@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 
 	workerpkg "github/nallanos/fire2/internal/packages/worker"
@@ -39,6 +40,10 @@ func (f *fakeWorkerRepo) List(ctx context.Context) ([]workerpkg.Worker, error) {
 func (f *fakeWorkerRepo) ListActive(ctx context.Context) ([]workerpkg.Worker, error) {
 	return nil, nil
 }
+func (f *fakeWorkerRepo) ClaimInventory(ctx context.Context, id string, token int64) (bool, error) {
+	return false, nil
+}
+func (f *fakeWorkerRepo) WithTx(tx pgx.Tx) workerpkg.Repository { return f }
 func (f *fakeWorkerRepo) MarkStaleInactive(ctx context.Context, timeout time.Duration) (int64, error) {
 	f.calls++
 	f.gotTimeout = timeout

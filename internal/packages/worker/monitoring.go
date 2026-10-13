@@ -12,6 +12,7 @@ import (
 	"time"
 
 	orchestratorv1 "github/nallanos/fire2/gen/orchestrator/v1"
+	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
 )
 
 func detectWorkerAddress() (string, error) {
@@ -208,10 +209,43 @@ func (w *WorkerService) UpdateWorker(ctx context.Context) (string, error) {
 		w.mu.Unlock()
 	}
 
+	heartbeat.Sandboxes, heartbeat.InventoryComplete = w.sandboxInventory(ctx)
+
 	_, err = w.orchestratorClient.ReportWorkerHeartbeat(ctx, heartbeat)
 	if err != nil {
 		return "", err
 	}
 
 	return snap.ID, nil
+}
+
+// inventoryProbeTimeout bounds the instance-info call made for each sandbox
+// while building a heartbeat inventory.
+const inventoryProbeTimeout = time.Second
+
+// sandboxInventory lists every sandbox this worker currently tracks, with its
+// Firecracker instance state. A sandbox whose VM cannot be described (still
+// booting, or unresponsive) is still listed: the worker does host it. The
+// inventory is flagged incomplete if ctx expires before every sandbox was
+// probed, so the orchestrator never reconciles against a partial list.
+func (w *WorkerService) sandboxInventory(ctx context.Context) ([]*orchestratorv1.SandboxInventoryItem, bool) {
+	clients := w.RunningSandboxClients()
+	items := make([]*orchestratorv1.SandboxInventoryItem, 0, len(clients))
+	for id, client := range clients {
+		if ctx.Err() != nil {
+			return nil, false
+		}
+		state := sandboxpkg.InventoryStateUnknown
+		pctx, cancel := context.WithTimeout(ctx, inventoryProbeTimeout)
+		event, err := client.GetMetrics(pctx)
+		cancel()
+		if err == nil {
+			state = event.State
+		}
+		items = append(items, &orchestratorv1.SandboxInventoryItem{SandboxId: id, State: state})
+	}
+	if ctx.Err() != nil {
+		return nil, false
+	}
+	return items, true
 }
