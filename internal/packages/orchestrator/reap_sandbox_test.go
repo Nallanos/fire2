@@ -349,6 +349,10 @@ func TestHeartbeatInventory_TokenChangeAndStaleToken(t *testing.T) {
 		t.Fatalf("stale event: want FailedPrecondition, got %v", err)
 	}
 	assertStatus(t, ctx, e.sandboxRepo, "sbx-start", sandboxpkg.StatusStarting)
+	var stored int
+	if err := e.pool.QueryRow(ctx, `SELECT count(*) FROM sandbox_events WHERE worker_id = 'wk-tok'`).Scan(&stored); err != nil || stored != 0 {
+		t.Fatalf("stale event must not be stored: rows=%d err=%v", stored, err)
+	}
 
 	// The new incarnation's first complete inventory fails what it does not list.
 	if err := e.heartbeat(srv, "wk-tok", newToken, true, item("sbx-listed", "Running")); err != nil {
