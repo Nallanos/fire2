@@ -162,7 +162,7 @@ func (s *EventGRPCServer) ReportWorkerHeartbeat(ctx context.Context, req *orches
 		return &emptypb.Empty{}, nil
 	}
 
-	if err := s.reconcileHeartbeat(ctx, w, req.GetSandboxes()); err != nil {
+	if err := s.reconcileHeartbeat(ctx, w, req.GetSandboxIds()); err != nil {
 		return nil, heartbeatError(err)
 	}
 	return &emptypb.Empty{}, nil
@@ -178,15 +178,15 @@ func heartbeatError(err error) error {
 // reconcileHeartbeat verifies the fencing token, refreshes the worker row and
 // reconciles the reported inventory against the database in a single
 // transaction. A stale token fails the worker update and rolls everything back.
-func (s *EventGRPCServer) reconcileHeartbeat(ctx context.Context, w workerpkg.Worker, inventory []*orchestratorv1.SandboxInventoryItem) error {
+func (s *EventGRPCServer) reconcileHeartbeat(ctx context.Context, w workerpkg.Worker, sandboxIDs []string) error {
 	if s.pool == nil || s.riverClient == nil {
 		return errors.New("inventory reconciliation is not configured")
 	}
 
-	items := make([]sandboxpkg.InventoryItem, 0, len(inventory))
-	seen := make(map[string]struct{}, len(inventory))
-	for _, it := range inventory {
-		id := strings.TrimSpace(it.GetSandboxId())
+	ids := make([]string, 0, len(sandboxIDs))
+	seen := make(map[string]struct{}, len(sandboxIDs))
+	for _, raw := range sandboxIDs {
+		id := strings.TrimSpace(raw)
 		if id == "" {
 			continue
 		}
@@ -194,7 +194,7 @@ func (s *EventGRPCServer) reconcileHeartbeat(ctx context.Context, w workerpkg.Wo
 			continue
 		}
 		seen[id] = struct{}{}
-		items = append(items, sandboxpkg.InventoryItem{SandboxID: id, State: it.GetState()})
+		ids = append(ids, id)
 	}
 
 	tx, err := s.pool.Begin(ctx)
@@ -211,7 +211,7 @@ func (s *EventGRPCServer) reconcileHeartbeat(ctx context.Context, w workerpkg.Wo
 	if err != nil {
 		return err
 	}
-	res, err := s.sandboxRepo.WithTx(tx).ReconcileInventory(ctx, w.ID, first, items)
+	res, err := s.sandboxRepo.WithTx(tx).ReconcileInventory(ctx, w.ID, first, ids)
 	if err != nil {
 		return err
 	}
