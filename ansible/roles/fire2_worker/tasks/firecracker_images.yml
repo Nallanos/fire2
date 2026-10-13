@@ -7,7 +7,7 @@
 # NOTE: these are read-only templates — never point path_on_host at the
 # rootfs directly, or concurrent VMs will corrupt each other's writes.
 # thinpool.yml imports it into the dm-thin pool as the base volume that
-# per-sandbox volumes are snapshotted from (fire2-thin create).
+# per-sandbox volumes are snapshotted from (internal/packages/thin).
 
 - name: Create Firecracker images directory
   ansible.builtin.file:

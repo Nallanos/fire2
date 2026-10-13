@@ -5,7 +5,6 @@ import (
 	"time"
 
 	orchestratorv1 "github/nallanos/fire2/gen/orchestrator/v1"
-	runtimeClient "github/nallanos/fire2/internal/packages/runtime"
 )
 
 type WorkerStatus string
@@ -56,11 +55,7 @@ type WorkerService struct {
 	mu          sync.Mutex
 	heartbeatMu sync.Mutex
 	worker      Worker
-	// map of firecrackerClient *runtime.Client
-	runningSandboxes map[string]*runtimeClient.Client
-
-	// map of sandboxes that are currently being deleted, to prevent concurrent deletion attempts
-	deletingSandboxes map[string]struct{}
+	sandboxes   SandboxManager
 }
 
 type CreateSandboxInput struct {

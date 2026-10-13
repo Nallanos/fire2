@@ -181,6 +181,7 @@ func (w *WorkerService) UpdateWorker(ctx context.Context) (string, error) {
 	w.worker.Last_heartbeat = time.Now().UTC()
 	snap := w.worker
 	w.mu.Unlock()
+	w.sandboxes.SetCapacity(snap.Capacity)
 
 	heartbeat := &orchestratorv1.WorkerHeartbeat{
 		WorkerId:     snap.ID,
@@ -208,7 +209,7 @@ func (w *WorkerService) UpdateWorker(ctx context.Context) (string, error) {
 		w.mu.Unlock()
 	}
 
-	heartbeat.SandboxIds = w.ListRunningSandboxes(ctx)
+	heartbeat.Sandboxes = w.sandboxes.Snapshot()
 	heartbeat.InventoryComplete = true
 
 	_, err = w.orchestratorClient.ReportWorkerHeartbeat(ctx, heartbeat)

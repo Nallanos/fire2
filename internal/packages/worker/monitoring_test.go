@@ -9,6 +9,7 @@ import (
 	"time"
 
 	orchestratorv1 "github/nallanos/fire2/gen/orchestrator/v1"
+	"github/nallanos/fire2/internal/packages/sandboxmgr"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
@@ -20,7 +21,7 @@ type heartbeatClientStub struct {
 	registrations      int
 	registrationTokens []int64
 	heartbeatTokens    []int64
-	heartbeatSandboxes [][]string
+	heartbeatSandboxes [][]*orchestratorv1.SandboxInventoryEntry
 	heartbeatComplete  []bool
 }
 
@@ -45,14 +46,39 @@ func (c *heartbeatClientStub) ReportWorkerHeartbeat(_ context.Context, req *orch
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.heartbeatTokens = append(c.heartbeatTokens, req.GetFencingToken())
-	c.heartbeatSandboxes = append(c.heartbeatSandboxes, req.GetSandboxIds())
+	c.heartbeatSandboxes = append(c.heartbeatSandboxes, req.GetSandboxes())
 	c.heartbeatComplete = append(c.heartbeatComplete, req.GetInventoryComplete())
 	return &emptypb.Empty{}, nil
 }
 
+type sandboxManagerStub struct {
+	mu        sync.Mutex
+	inventory []*orchestratorv1.SandboxInventoryEntry
+	capacity  int
+}
+
+func (s *sandboxManagerStub) Create(sandboxmgr.CreateInput) error { return nil }
+func (s *sandboxManagerStub) Stop(string) error                   { return nil }
+func (s *sandboxManagerStub) Remove(string) error                 { return nil }
+func (s *sandboxManagerStub) Events() <-chan sandboxmgr.StateChange {
+	return nil
+}
+
+func (s *sandboxManagerStub) Snapshot() []*orchestratorv1.SandboxInventoryEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*orchestratorv1.SandboxInventoryEntry(nil), s.inventory...)
+}
+
+func (s *sandboxManagerStub) SetCapacity(capacity int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.capacity = capacity
+}
+
 func TestUpdateWorkerRegistersOnceAndReportsFencingToken(t *testing.T) {
 	client := &heartbeatClientStub{registrationToken: 42}
-	w := NewWorkerService(client)
+	w := NewWorkerService(client, &sandboxManagerStub{})
 	w.SetWorkerIdentity("worker-1", "127.0.0.1")
 	w.SetWorkerBudget(2, 1024)
 
@@ -77,7 +103,7 @@ func TestUpdateWorkerRegistersOnceAndReportsFencingToken(t *testing.T) {
 
 func TestUpdateWorkerSerializesConcurrentRegistration(t *testing.T) {
 	client := &heartbeatClientStub{registrationToken: 17, registrationDelay: 20 * time.Millisecond}
-	w := NewWorkerService(client)
+	w := NewWorkerService(client, &sandboxManagerStub{})
 	w.SetWorkerIdentity("worker-2", "127.0.0.1")
 	w.SetWorkerBudget(2, 1024)
 
@@ -114,7 +140,7 @@ func TestUpdateWorkerSerializesConcurrentRegistration(t *testing.T) {
 
 func TestUpdateWorkerRejectsInvalidRegistrationToken(t *testing.T) {
 	client := &heartbeatClientStub{}
-	w := NewWorkerService(client)
+	w := NewWorkerService(client, &sandboxManagerStub{})
 	w.SetWorkerIdentity("worker-3", "127.0.0.1")
 	w.SetWorkerBudget(2, 1024)
 
@@ -131,12 +157,13 @@ func TestUpdateWorkerRejectsInvalidRegistrationToken(t *testing.T) {
 	}
 }
 
-// The heartbeat inventory is the key set of the worker's in-memory sandbox
-// map: complete, with no probe of the VMs (the map holds no live clients here,
-// so any probe would fail or panic).
-func TestUpdateWorkerReportsTrackedSandboxIDs(t *testing.T) {
+// The heartbeat inventory is the sandbox manager's snapshot: every tracked
+// sandbox with its last known state, complete, with no probe of the VMs. The
+// heartbeat also hands the computed capacity to the manager.
+func TestUpdateWorkerReportsSandboxInventory(t *testing.T) {
 	client := &heartbeatClientStub{registrationToken: 7}
-	w := NewWorkerService(client)
+	sandboxes := &sandboxManagerStub{}
+	w := NewWorkerService(client, sandboxes)
 	w.SetWorkerIdentity("worker-inv", "127.0.0.1")
 	w.SetWorkerBudget(2, 1024)
 
@@ -144,10 +171,12 @@ func TestUpdateWorkerReportsTrackedSandboxIDs(t *testing.T) {
 		t.Fatalf("UpdateWorker (empty): %v", err)
 	}
 
-	w.mu.Lock()
-	w.runningSandboxes["sbx-a"] = nil
-	w.runningSandboxes["sbx-b"] = nil
-	w.mu.Unlock()
+	sandboxes.mu.Lock()
+	sandboxes.inventory = []*orchestratorv1.SandboxInventoryEntry{
+		{SandboxId: "sbx-a", State: sandboxmgr.StateRunning},
+		{SandboxId: "sbx-b", State: sandboxmgr.StateDead},
+	}
+	sandboxes.mu.Unlock()
 	if _, err := w.UpdateWorker(context.Background()); err != nil {
 		t.Fatalf("UpdateWorker: %v", err)
 	}
@@ -158,12 +187,22 @@ func TestUpdateWorkerReportsTrackedSandboxIDs(t *testing.T) {
 		t.Fatalf("expected 2 heartbeats, got %d", len(client.heartbeatSandboxes))
 	}
 	if !client.heartbeatComplete[0] || len(client.heartbeatSandboxes[0]) != 0 {
-		t.Fatalf("empty worker must send a complete, empty inventory: complete=%v ids=%v",
+		t.Fatalf("empty worker must send a complete, empty inventory: complete=%v entries=%v",
 			client.heartbeatComplete[0], client.heartbeatSandboxes[0])
 	}
-	got := append([]string(nil), client.heartbeatSandboxes[1]...)
+	var got []string
+	for _, e := range client.heartbeatSandboxes[1] {
+		got = append(got, e.GetSandboxId()+"="+e.GetState().String())
+	}
 	sort.Strings(got)
-	if !client.heartbeatComplete[1] || strings.Join(got, ",") != "sbx-a,sbx-b" {
-		t.Fatalf("inventory must list tracked sandbox IDs: complete=%v ids=%v", client.heartbeatComplete[1], got)
+	want := "sbx-a=SANDBOX_STATE_RUNNING,sbx-b=SANDBOX_STATE_DEAD"
+	if !client.heartbeatComplete[1] || strings.Join(got, ",") != want {
+		t.Fatalf("inventory = %v (complete=%v), want %s", got, client.heartbeatComplete[1], want)
+	}
+
+	sandboxes.mu.Lock()
+	defer sandboxes.mu.Unlock()
+	if sandboxes.capacity != 2 { // (1024-128)/256 = 3, cpu 2/1 = 2
+		t.Fatalf("manager capacity = %d, want 2", sandboxes.capacity)
 	}
 }
