@@ -2,12 +2,9 @@ package runtime
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 
 	firecracker "github.com/firecracker-microvm/firecracker-go-sdk"
 	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
@@ -21,8 +18,10 @@ type Client struct {
 }
 
 type CreateVmRequest struct {
-	KernelPath   string
-	FireThinPath string
+	KernelPath string
+	// RootDrivePath is the block device holding the sandbox's root
+	// filesystem (see internal/packages/thin).
+	RootDrivePath string
 
 	VcpuCount  int32
 	MemSizeMib int32
@@ -58,10 +57,8 @@ func NewClient(sandboxId string) (*Client, error) {
 // CreateMachine spawns a Firecracker process for this client's socket, configures
 // it (machine config, boot source, root drive). The machine is not started yet.
 func (c *Client) CreateMachine(req CreateVmRequest) error {
-
-	sandboxVolumePath, err := CreateSandboxVolume(req.FireThinPath, c.sandboxId)
-	if err != nil {
-		return fmt.Errorf("create sandbox volume: %w", err)
+	if req.RootDrivePath == "" {
+		return fmt.Errorf("no root drive")
 	}
 
 	// Defensive: a stale socket file left by a killed/crashed process would
@@ -79,7 +76,7 @@ func (c *Client) CreateMachine(req CreateVmRequest) error {
 		Drives: []models.Drive{
 			{
 				DriveID:      firecracker.String("rootfs"),
-				PathOnHost:   firecracker.String(sandboxVolumePath),
+				PathOnHost:   firecracker.String(req.RootDrivePath),
 				IsRootDevice: firecracker.Bool(true),
 				IsReadOnly:   firecracker.Bool(false),
 			},
@@ -133,32 +130,12 @@ func (c *Client) Stop() error {
 	return nil
 }
 
-// CreateSandboxVolume creates a thin-provisioned volume for the sandbox
-// using the fire2-thin tool at fire2ThinPath. Returns the path to the
-// created device.
-func CreateSandboxVolume(fire2ThinPath, sandboxId string) (devicePath string, err error) {
-	out, err := exec.Command("sudo", fire2ThinPath, "create", sandboxId).Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if ok := errors.As(err, &exitErr); ok {
-			return "", fmt.Errorf("create sandbox volume: %s", strings.TrimSpace(string(exitErr.Stderr)))
-		}
-		return "", fmt.Errorf("create sandbox volume: %w", err)
+// Wait blocks until the Firecracker process exits, or ctx is done. It is the
+// only reliable signal that a VM is dead: DescribeInstanceInfo has no
+// "exited" state, it just starts failing.
+func (c *Client) Wait(ctx context.Context) error {
+	if c.machine == nil {
+		return fmt.Errorf("machine not created")
 	}
-	return strings.TrimSpace(string(out)), nil
-}
-
-// RemoveSandboxVolume removes the thin-provisioned volume for the sandbox
-// using the fire2-thin tool at fire2ThinPath. Returns an error if the
-// removal fails.
-func RemoveSandboxVolume(fire2ThinPath, sandboxId string) error {
-	_, err := exec.Command("sudo", fire2ThinPath, "remove", sandboxId).Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if ok := errors.As(err, &exitErr); ok {
-			return fmt.Errorf("remove sandbox volume: %s", strings.TrimSpace(string(exitErr.Stderr)))
-		}
-		return fmt.Errorf("remove sandbox volume: %w", err)
-	}
-	return nil
+	return c.machine.Wait(ctx)
 }

@@ -11,7 +11,7 @@ Coordinates sandbox lifecycle across the API, River job queue, Firecracker worke
 - `CleanupSandboxWorker` — River worker; removes the sandbox from its worker, then moves it to the job's `TargetStatus` (default `failed`, `stopped` for TTL/user delete). Removal must be confirmed by the worker (gRPC `NotFound` counts as confirmed): otherwise the sandbox stays `cleanup_pending` with its `worker_id` and the job errors so River retries. On the final attempt the worker link is dropped and the sandbox ends `failed`.
 - `ReapSandboxWorker` — periodic (`reap_sandbox` queue, `SANDBOX_REAPER_INTERVAL`, default 1m). In one transaction it claims (`→ cleanup_pending`, `FOR UPDATE SKIP LOCKED`) sandboxes whose `created_at + ttl` (seconds, `<= 0` = immediately) passed (cleanup → `stopped`) and active sandboxes not listed by their worker for `SANDBOX_LIVENESS_TIMEOUT` (default 15s; cleanup → `failed`), and enqueues their cleanup jobs.
 - `RemoveOrphanWorker` — removes a sandbox a worker reports but the DB does not attribute to it (unknown, terminal, or assigned elsewhere); unique per (worker, sandbox) while pending.
-- `EventGRPCServer` — receives Firecracker instance events from workers; guards status transitions.
+- `EventGRPCServer` — receives sandbox state-change events and heartbeats from workers; guards status transitions.
 - `Scheduler` — weighted random worker selection; `ChooseLeastUsedWorker` returns `ErrNoWorkerCandidates` when no healthy workers exist.
 - `StrongRetryPolicy` — exponential backoff for the default queue (main job).
 
@@ -32,12 +32,12 @@ On the **final attempt**, `maybeCleanup` transitions the sandbox to `cleanup_pen
 ## State ownership rule
 
 - **Job owns** all transitions from `pending` through `running`.
-- **Events own** `starting → running` only. Docker's die/stop/kill/oom had no
-  Firecracker equivalent that survived the migration — `statusTransitionForState`
-  (event_grpc.go) has no case for a crashed/exited instance, so there is
-  currently no event-driven `→ failed` transition. A dead sandbox is only
-  caught by missed-heartbeat detection, not this event stream — this is a
-  known gap, not a design choice.
+- **Events and the heartbeat inventory** both advance `starting → running`
+  (guarded, so whichever lands first wins). Events are best-effort: the
+  worker sends one per state change and never retries.
+- **Heartbeat inventory owns** `* → cleanup_pending` for a sandbox the worker
+  reports `DEAD` (its Firecracker process exited). Events carry DEAD too but
+  only store it — `statusTransitionForState` has no failure case.
 - **Reaper owns** `* → cleanup_pending` for TTL/liveness expiry; **cleanup job owns** `cleanup_pending → failed|stopped`.
 
 Never let two owners race on the same transition. Guards in `UpdateStatus` and `AssignWorker` enforce this at the SQL level.
@@ -45,7 +45,16 @@ Never let two owners race on the same transition. Guards in `UpdateStatus` and `
 ## Heartbeat reconciliation and fencing
 
 - `ReportWorkerHeartbeat` with `inventory_complete=true` runs in ONE transaction: fenced `worker` update (stale token → `FailedPrecondition`, everything rolled back), `ClaimInventory` (true once per token), `ReconcileInventory`, orphan job inserts. Needs `WithTransactions(pool)`; orphan removal needs `WithRiverClient`.
-- Reconcile: the inventory is a list of sandbox IDs read from the worker's in-memory map (no VM probe, no state). Listed sandboxes get `sandboxes.last_seen_at = now()`; it never advances a status (events do `starting → running`). Sandboxes absent from the inventory are not touched — they age until the reaper fails them.
+- Reconcile: the inventory is the worker's sandbox manager snapshot, one `SandboxInventoryEntry{sandbox_id, state}` per tracked sandbox (no VM probe on the heartbeat path). `inventoryFromEntries` splits it into a `sandbox.Inventory` by state:
+
+  | State | `last_seen_at` | Status |
+  |---|---|---|
+  | `STARTING`, `PAUSED` | refreshed | unchanged |
+  | `RUNNING` | refreshed | `starting → running` |
+  | `UNKNOWN` (or unspecified) | not refreshed: ages toward liveness expiry | unchanged |
+  | `DEAD` | not refreshed | `assigned\|starting\|running → cleanup_pending`, cleanup (→ `failed`) enqueued in the same transaction, like Lost |
+
+  Sandboxes absent from the inventory are not touched — they age until the reaper fails them. A DEAD sandbox stays in the worker's inventory until the cleanup's `RemoveSandbox` drops it, so a crash is acted on within one heartbeat instead of the liveness delay.
 - First complete inventory of a new token (`worker.inventory_token`): a new token proves the previous process, and its VMs (ReapOrphans), are dead. Active sandboxes not listed and last seen before `worker.registered_at` are claimed (`cleanup_pending`) and their cleanup (→ `failed`) enqueued in the same transaction, without waiting for the liveness delay. Sandboxes assigned after the registration are spared.
 - `inventory_complete=false` (absent inventory) only updates the worker row. Inventory heartbeats need both `WithTransactions(pool)` and `WithRiverClient`.
 - `IngestSandboxEvent` requires `fencing_token`. The `sandbox_events` INSERT itself is fenced (`INSERT … SELECT … FROM worker WHERE id AND fencing_token`; no row → `ErrEventFenced` → `FailedPrecondition`), and status changes use `UpdateStatusFenced` (sandbox must be hosted by that worker incarnation).

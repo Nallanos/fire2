@@ -86,8 +86,8 @@ func (s *EventGRPCServer) IngestSandboxEvent(ctx context.Context, req *orchestra
 	}
 
 	workerID := strings.TrimSpace(req.GetWorkerId())
-	state := strings.TrimSpace(req.GetState())
-	if workerID == "" || state == "" {
+	state := req.GetState()
+	if workerID == "" || state == orchestratorv1.SandboxState_SANDBOX_STATE_UNSPECIFIED {
 		return nil, status.Error(codes.InvalidArgument, "missing required fields")
 	}
 
@@ -99,9 +99,9 @@ func (s *EventGRPCServer) IngestSandboxEvent(ctx context.Context, req *orchestra
 		ID:         eventID,
 		SandboxID:  sandboxID,
 		WorkerID:   workerID,
-		State:      state,
+		State:      stateName(state),
 		OccurredAt: occurredAt,
-
+		// Fences the INSERT itself: a stale incarnation stores nothing.
 		FencingToken: token,
 	})
 	if errors.Is(err, ErrEventFenced) {
@@ -156,7 +156,7 @@ func (s *EventGRPCServer) ReportWorkerHeartbeat(ctx context.Context, req *orches
 		return &emptypb.Empty{}, nil
 	}
 
-	if err := s.reconcileHeartbeat(ctx, w, req.GetSandboxIds()); err != nil {
+	if err := s.reconcileHeartbeat(ctx, w, req.GetSandboxes()); err != nil {
 		return nil, heartbeatError(err)
 	}
 	return &emptypb.Empty{}, nil
@@ -172,24 +172,12 @@ func heartbeatError(err error) error {
 // reconcileHeartbeat verifies the fencing token, refreshes the worker row and
 // reconciles the reported inventory against the database in a single
 // transaction. A stale token fails the worker update and rolls everything back.
-func (s *EventGRPCServer) reconcileHeartbeat(ctx context.Context, w workerpkg.Worker, sandboxIDs []string) error {
+func (s *EventGRPCServer) reconcileHeartbeat(ctx context.Context, w workerpkg.Worker, entries []*orchestratorv1.SandboxInventoryEntry) error {
 	if s.pool == nil || s.riverClient == nil {
 		return errors.New("inventory reconciliation is not configured")
 	}
 
-	ids := make([]string, 0, len(sandboxIDs))
-	seen := make(map[string]struct{}, len(sandboxIDs))
-	for _, raw := range sandboxIDs {
-		id := strings.TrimSpace(raw)
-		if id == "" {
-			continue
-		}
-		if _, dup := seen[id]; dup {
-			continue
-		}
-		seen[id] = struct{}{}
-		ids = append(ids, id)
-	}
+	inv := inventoryFromEntries(entries)
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -205,16 +193,17 @@ func (s *EventGRPCServer) reconcileHeartbeat(ctx context.Context, w workerpkg.Wo
 	if err != nil {
 		return err
 	}
-	res, err := s.sandboxRepo.WithTx(tx).ReconcileInventory(ctx, w.ID, first, ids)
+	res, err := s.sandboxRepo.WithTx(tx).ReconcileInventory(ctx, w.ID, first, inv)
 	if err != nil {
 		return err
 	}
 
 	// A new token proves the previous process is dead and so are its VMs
 	// (ReapOrphans kills them at startup): fail them now instead of waiting
-	// for the liveness delay.
-	params := make([]river.InsertManyParams, 0, len(res.Lost)+len(res.Orphans))
-	for _, id := range res.Lost {
+	// for the liveness delay. A VM the worker reports dead (its process
+	// exited) is failed the same way.
+	params := make([]river.InsertManyParams, 0, len(res.Lost)+len(res.Dead)+len(res.Orphans))
+	for _, id := range append(res.Lost, res.Dead...) {
 		params = append(params, cleanupParams(id, sandboxpkg.StatusFailed))
 	}
 	for _, id := range res.Orphans {
@@ -251,10 +240,10 @@ func workerFromHeartbeat(req *orchestratorv1.WorkerHeartbeat) workerpkg.Worker {
 }
 
 // applyStatusFromState applies a guarded status update based on the reported
-// Firecracker instance state. Updates are only applied when the sandbox is in
+// sandbox state. Updates are only applied when the sandbox is in
 // a state the event handler owns. rowsAffected=0 means the guard rejected the
 // update (sandbox in a state the job owns).
-func (s *EventGRPCServer) applyStatusFromState(ctx context.Context, sandboxID, workerID string, token int64, state string) {
+func (s *EventGRPCServer) applyStatusFromState(ctx context.Context, sandboxID, workerID string, token int64, state orchestratorv1.SandboxState) {
 	target, allowedFrom, ok := statusTransitionForState(state)
 	if !ok {
 		return
@@ -271,17 +260,14 @@ func (s *EventGRPCServer) applyStatusFromState(ctx context.Context, sandboxID, w
 }
 
 // statusTransitionForState returns the target status and the set of allowed
-// source statuses for a reported firecracker-go-sdk InstanceInfo.State value
-// ("Not started" | "Running" | "Paused"). The create-sandbox job owns all
-// transitions before running; events only advance starting→running.
+// source statuses for a reported sandbox state. The create-sandbox job owns
+// all transitions before running; events only advance starting→running.
 //
-// Unlike Docker's die/stop/kill/oom, InstanceInfo has no "crashed"/"exited"
-// state to drive a starting|running→failed transition — that signal doesn't
-// exist here anymore. Detecting a dead sandbox needs a different mechanism
-// (e.g. missed heartbeats), not this event stream.
-func statusTransitionForState(state string) (sandboxpkg.Status, []sandboxpkg.Status, bool) {
-	switch strings.ToLower(strings.TrimSpace(state)) {
-	case "running":
+// Events are best-effort: DEAD is acted on by the heartbeat inventory (see
+// ReconcileInventory), which is the authoritative path, not here.
+func statusTransitionForState(state orchestratorv1.SandboxState) (sandboxpkg.Status, []sandboxpkg.Status, bool) {
+	switch state {
+	case orchestratorv1.SandboxState_SANDBOX_STATE_RUNNING:
 		return sandboxpkg.StatusRunning, []sandboxpkg.Status{
 			sandboxpkg.StatusStarting,
 			sandboxpkg.StatusRunning,
@@ -289,6 +275,42 @@ func statusTransitionForState(state string) (sandboxpkg.Status, []sandboxpkg.Sta
 	default:
 		return "", nil, false
 	}
+}
+
+// stateName is how a state is stored in sandbox_events: "running", "dead"...
+func stateName(state orchestratorv1.SandboxState) string {
+	return strings.ToLower(strings.TrimPrefix(state.String(), "SANDBOX_STATE_"))
+}
+
+// inventoryFromEntries splits a heartbeat inventory by reported state,
+// dropping blank and duplicate IDs (the first entry for an ID wins). An
+// unspecified state counts as unknown: the sandbox is present, but nothing is
+// known about its VM.
+func inventoryFromEntries(entries []*orchestratorv1.SandboxInventoryEntry) sandboxpkg.Inventory {
+	var inv sandboxpkg.Inventory
+	seen := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		id := strings.TrimSpace(e.GetSandboxId())
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+
+		switch e.GetState() {
+		case orchestratorv1.SandboxState_SANDBOX_STATE_RUNNING:
+			inv.Running = append(inv.Running, id)
+		case orchestratorv1.SandboxState_SANDBOX_STATE_STARTING, orchestratorv1.SandboxState_SANDBOX_STATE_PAUSED:
+			inv.Live = append(inv.Live, id)
+		case orchestratorv1.SandboxState_SANDBOX_STATE_DEAD:
+			inv.Dead = append(inv.Dead, id)
+		default:
+			inv.Unknown = append(inv.Unknown, id)
+		}
+	}
+	return inv
 }
 
 func ServeEventGRPC(address string, srv orchestratorv1.OrchestratorServiceServer, opts ...grpc.ServerOption) error {

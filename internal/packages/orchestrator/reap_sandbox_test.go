@@ -110,10 +110,24 @@ func (e *reapEnv) server(opts ...EventServerOption) *EventGRPCServer {
 	return NewEventGRPCServer(e.sandboxRepo, NewEventRepository(e.pool), e.workerRepo, opts...)
 }
 
+// heartbeat reports sandboxIDs as STARTING: present and refreshed, with no
+// status transition.
 func (e *reapEnv) heartbeat(srv *EventGRPCServer, workerID string, token int64, complete bool, sandboxIDs ...string) error {
+	states := make(map[string]orchestratorv1.SandboxState, len(sandboxIDs))
+	for _, id := range sandboxIDs {
+		states[id] = orchestratorv1.SandboxState_SANDBOX_STATE_STARTING
+	}
+	return e.heartbeatStates(srv, workerID, token, complete, states)
+}
+
+func (e *reapEnv) heartbeatStates(srv *EventGRPCServer, workerID string, token int64, complete bool, states map[string]orchestratorv1.SandboxState) error {
+	entries := make([]*orchestratorv1.SandboxInventoryEntry, 0, len(states))
+	for id, st := range states {
+		entries = append(entries, &orchestratorv1.SandboxInventoryEntry{SandboxId: id, State: st})
+	}
 	_, err := srv.ReportWorkerHeartbeat(context.Background(), &orchestratorv1.WorkerHeartbeat{
 		WorkerId: workerID, Status: "active", Address: e.host, Port: int32(e.port), Capacity: 10,
-		FencingToken: token, InventoryComplete: complete, SandboxIds: sandboxIDs,
+		FencingToken: token, InventoryComplete: complete, Sandboxes: entries,
 	})
 	return err
 }
@@ -326,7 +340,7 @@ func TestHeartbeatInventory_TokenChangeAndStaleToken(t *testing.T) {
 	}
 	assertStatus(t, ctx, e.sandboxRepo, "sbx-dead", sandboxpkg.StatusRunning)
 	_, err = srv.IngestSandboxEvent(ctx, &orchestratorv1.SandboxEvent{
-		SandboxId: "sbx-start", WorkerId: "wk-tok", State: "Running", FencingToken: oldToken,
+		SandboxId: "sbx-start", WorkerId: "wk-tok", State: orchestratorv1.SandboxState_SANDBOX_STATE_RUNNING, FencingToken: oldToken,
 	})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("stale event: want FailedPrecondition, got %v", err)
@@ -360,7 +374,7 @@ func TestHeartbeatInventory_TokenChangeAndStaleToken(t *testing.T) {
 	// Events from the current incarnation apply.
 	e.seed(t, ctx, "sbx-ev", sandboxpkg.StatusStarting, 3600, 0, "wk-tok")
 	if _, err := srv.IngestSandboxEvent(ctx, &orchestratorv1.SandboxEvent{
-		SandboxId: "sbx-ev", WorkerId: "wk-tok", State: "Running", FencingToken: newToken,
+		SandboxId: "sbx-ev", WorkerId: "wk-tok", State: orchestratorv1.SandboxState_SANDBOX_STATE_RUNNING, FencingToken: newToken,
 	}); err != nil {
 		t.Fatalf("current event: %v", err)
 	}
@@ -411,4 +425,60 @@ func TestHeartbeatInventory_OrphansAreRemoved(t *testing.T) {
 	if n := e.fake.RemoveCallCount("sbx-mine"); n != 0 {
 		t.Fatalf("hosted sandbox must not be removed, got %d calls", n)
 	}
+}
+
+// The inventory reacts to each reported state: RUNNING advances starting →
+// running, DEAD is claimed and cleaned up to failed (the worker is asked to
+// remove it), UNKNOWN is left to age toward liveness expiry.
+func TestHeartbeatInventory_StatesDriveStatus(t *testing.T) {
+	ctx := context.Background()
+	e := newReapEnv(t, ctx, time.Hour)
+	token := e.registerWorker(t, ctx, "wk-st")
+	srv := e.server()
+	e.seed(t, ctx, "sbx-booted", sandboxpkg.StatusStarting, 3600, 0, "wk-st")
+	e.seed(t, ctx, "sbx-paused", sandboxpkg.StatusRunning, 3600, 0, "wk-st")
+	e.seed(t, ctx, "sbx-crashed", sandboxpkg.StatusRunning, 3600, 0, "wk-st")
+	e.seed(t, ctx, "sbx-unknown", sandboxpkg.StatusRunning, 3600, 0, "wk-st")
+	e.setLastSeen(t, ctx, "sbx-paused", time.Minute)
+	e.setLastSeen(t, ctx, "sbx-unknown", time.Minute)
+
+	err := e.heartbeatStates(srv, "wk-st", token, true, map[string]orchestratorv1.SandboxState{
+		"sbx-booted":  orchestratorv1.SandboxState_SANDBOX_STATE_RUNNING,
+		"sbx-paused":  orchestratorv1.SandboxState_SANDBOX_STATE_PAUSED,
+		"sbx-crashed": orchestratorv1.SandboxState_SANDBOX_STATE_DEAD,
+		"sbx-unknown": orchestratorv1.SandboxState_SANDBOX_STATE_UNKNOWN,
+	})
+	if err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+
+	assertStatus(t, ctx, e.sandboxRepo, "sbx-booted", sandboxpkg.StatusRunning)
+	assertStatus(t, ctx, e.sandboxRepo, "sbx-paused", sandboxpkg.StatusRunning)
+	if age := e.lastSeenAge(t, ctx, "sbx-paused"); age > 5*time.Second {
+		t.Fatalf("paused sandbox must be refreshed, last seen %s ago", age)
+	}
+	assertStatus(t, ctx, e.sandboxRepo, "sbx-unknown", sandboxpkg.StatusRunning)
+	if age := e.lastSeenAge(t, ctx, "sbx-unknown"); age < 30*time.Second {
+		t.Fatalf("unknown sandbox must not be refreshed, last seen %s ago", age)
+	}
+
+	waitFor(t, "dead sandbox cleanup", func() bool {
+		sbx, err := e.sandboxRepo.GetByID(ctx, "sbx-crashed")
+		return err == nil && sbx.Status == sandboxpkg.StatusFailed && e.fake.RemoveCallCount("sbx-crashed") >= 1
+	})
+	for _, id := range []string{"sbx-booted", "sbx-paused", "sbx-unknown"} {
+		if n := e.fake.RemoveCallCount(id); n != 0 {
+			t.Fatalf("live sandbox %s must not be removed, got %d calls", id, n)
+		}
+	}
+
+	// A worker still reporting it DEAD (its removal not landed yet) cannot
+	// claim it again: it is failed, so it is only treated as an orphan.
+	err = e.heartbeatStates(srv, "wk-st", token, true, map[string]orchestratorv1.SandboxState{
+		"sbx-crashed": orchestratorv1.SandboxState_SANDBOX_STATE_DEAD,
+	})
+	if err != nil {
+		t.Fatalf("second heartbeat: %v", err)
+	}
+	assertStatus(t, ctx, e.sandboxRepo, "sbx-crashed", sandboxpkg.StatusFailed)
 }

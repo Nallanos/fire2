@@ -2,13 +2,12 @@
 - name: reload systemd
   ansible.builtin.systemd:
     daemon_reload: true
-  notify: restart fire2-worker instances
+  notify: restart fire2-worker
 
 - name: reload udev rules
   ansible.builtin.command: udevadm control --reload-rules
 
-- name: restart fire2-worker instances
+- name: restart fire2-worker
   ansible.builtin.systemd:
-    name: "fire2-worker@{{ item }}"
+    name: fire2-worker
     state: restarted
-  loop: "{{ range(1, worker_instances + 1) | list }}"

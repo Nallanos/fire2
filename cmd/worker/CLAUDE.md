@@ -1,14 +1,15 @@
 # cmd/worker
 
-Entry point for a worker node. Runs the `WorkerService` gRPC server and starts the Firecracker instance event reporter.
+Entry point for a worker node. Runs the `WorkerService` gRPC server its sandbox manager, and the sandbox state-change reporter.
 
 ## What it does
 
-1. Reaps any Firecracker VM left running by a previous crash/redeploy (`runtimeClient.ReapOrphans`).
-2. Connects to the orchestrator over gRPC (`ORCHESTRATOR_GRPC_ADDR`).
-3. Creates `WorkerService` (capacity-aware, owns Firecracker sandbox lifecycle).
-4. Starts `EventReporter` in a goroutine — polls each running sandbox's instance info (Firecracker has no push-based event stream like Docker's), forwards it to the orchestrator via `OrchestratorService.IngestSandboxEvent`.
-5. Serves `WorkerService` gRPC. With `WORKER_PORT` unset or `0` it binds an OS-assigned ephemeral port, reads the actual port back from the listener (`SetListenPort`), and reports it to the orchestrator via heartbeat. A non-zero `WORKER_PORT` pins a specific port.
+1. Locks the sandbox base dir (`sandboxmgr.LockBaseDir`, exclusive `flock`) and exits if another worker holds it: one worker per host.
+2. Reaps every sandbox left in its `FIRECRACKER_SANDBOX_DIR` by a previous crash/redeploy: Firecracker process, thin volume, directory (`runtimeClient.ReapOrphans`).
+3. Connects to the orchestrator over gRPC (`ORCHESTRATOR_GRPC_ADDR`).
+4. Creates the sandbox manager (`sandboxmgr.New`) and starts its audit loop (goroutine liveness + disk reconciliation every 30s).
+5. Creates `WorkerService` over the manager, and starts `EventReporter`, which forwards the manager's state changes to the orchestrator via `OrchestratorService.IngestSandboxEvent`.
+6. Serves `WorkerService` gRPC. With `WORKER_PORT` unset or `0` it binds an OS-assigned ephemeral port, reads the actual port back from the listener (`SetListenPort`), and reports it to the orchestrator via heartbeat. A non-zero `WORKER_PORT` pins a specific port.
 
 The worker holds **no database credentials**. It first calls `OrchestratorService.RegisterWorker` to claim a new fencing token, then includes that token in every `ReportWorkerHeartbeat` call. The orchestrator rejects heartbeats from an older worker incarnation.
 
@@ -23,5 +24,8 @@ The worker holds **no database credentials**. It first calls `OrchestratorServic
 | `WORKER_HEARTBEAT_INTERVAL` | `5s` |
 | `WORKER_CPU_BUDGET` | `0` (auto-detects `runtime.NumCPU()`) |
 | `WORKER_MEM_BUDGET` | `0` (auto-detects total RAM from `/proc/meminfo`) |
+| `FIRECRACKER_IMAGE_DIR` | — (holds `vmlinux`; checked at each create) |
+| `FIRECRACKER_SANDBOX_DIR` | `/tmp` (per-sandbox directories, locked by the worker) |
+| `FIRE2_THINPOOL_CONF` | `/etc/fire2/thinpool.conf` (dm-thin pool settings, see `internal/packages/thin`) |
 
-When multiple workers share a VM, set `WORKER_CPU_BUDGET` and `WORKER_MEM_BUDGET` to a per-instance fraction of the VM's total resources so the orchestrator schedules correctly. The Ansible role divides `worker_cpu_budget / worker_instances` automatically.
+One worker process runs per host (systemd unit `fire2-worker`), **as root**: it drives device-mapper itself, with no sudo or helper script on the sandbox creation path. It owns every sandbox on the host, so a second process is refused at startup by the base dir lock.

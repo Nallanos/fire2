@@ -10,6 +10,7 @@ import (
 	"time"
 
 	workerv1 "github/nallanos/fire2/gen/worker/v1"
+	"github/nallanos/fire2/internal/packages/sandboxmgr"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -40,7 +41,7 @@ func (s *WorkerGRPCServer) CreateSandbox(ctx context.Context, req *workerv1.Crea
 		VcpuCount:  req.GetVcpuCount(),
 		MemSizeMib: req.GetMemSizeMib(),
 	}); err != nil {
-		return nil, err
+		return nil, sandboxError(err)
 	}
 
 	return &workerv1.CreateSandboxResponse{}, nil
@@ -48,7 +49,7 @@ func (s *WorkerGRPCServer) CreateSandbox(ctx context.Context, req *workerv1.Crea
 
 func (s *WorkerGRPCServer) StopSandbox(ctx context.Context, req *workerv1.StopSandboxRequest) (*workerv1.StopSandboxResponse, error) {
 	if err := s.service.StopSandbox(req.GetContainerId()); err != nil {
-		return nil, err
+		return nil, sandboxError(err)
 	}
 
 	return &workerv1.StopSandboxResponse{}, nil
@@ -56,13 +57,25 @@ func (s *WorkerGRPCServer) StopSandbox(ctx context.Context, req *workerv1.StopSa
 
 func (s *WorkerGRPCServer) RemoveSandbox(ctx context.Context, req *workerv1.RemoveSandboxRequest) (*workerv1.RemoveSandboxResponse, error) {
 	if err := s.service.RemoveSandbox(ctx, req.GetContainerId()); err != nil {
-		if errors.Is(err, ErrSandboxNotFound) {
-			return nil, status.Error(codes.NotFound, err.Error())
-		}
-		return nil, err
+		return nil, sandboxError(err)
 	}
 
 	return &workerv1.RemoveSandboxResponse{}, nil
+}
+
+// sandboxError maps sandboxmgr's sentinel errors onto gRPC codes the
+// orchestrator acts on: NotFound ends a cleanup, Unavailable is retried.
+func sandboxError(err error) error {
+	switch {
+	case errors.Is(err, sandboxmgr.ErrSandboxNotFound):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, sandboxmgr.ErrBusy):
+		return status.Error(codes.Unavailable, err.Error())
+	case errors.Is(err, sandboxmgr.ErrAtCapacity):
+		return status.Error(codes.ResourceExhausted, err.Error())
+	default:
+		return err
+	}
 }
 
 func (s *WorkerGRPCServer) ListRunningSandboxes(ctx context.Context, req *workerv1.ListRunningSandboxesRequest) (*workerv1.ListRunningSandboxesResponse, error) {

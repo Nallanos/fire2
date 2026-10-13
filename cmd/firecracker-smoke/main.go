@@ -6,7 +6,8 @@
 // permission issues, missing images).
 //
 // Reads the same environment variables the deployed worker does
-// (FIRECRACKER_IMAGE_DIR, FIRECRACKER_SANDBOX_DIR), so it validates whatever
+// (FIRECRACKER_IMAGE_DIR, FIRECRACKER_SANDBOX_DIR, FIRE2_THINPOOL_CONF), so it
+// validates whatever
 // host it runs on with no separate config to keep in sync. Self-cleaning:
 // stops the VM and removes its directory before exiting, pass or fail.
 package main
@@ -21,6 +22,7 @@ import (
 	"github.com/google/uuid"
 
 	"github/nallanos/fire2/internal/packages/runtime"
+	"github/nallanos/fire2/internal/packages/thin"
 )
 
 func main() {
@@ -44,9 +46,13 @@ func run() error {
 	}
 
 	sandboxID := "smoke-" + uuid.NewString()
-	fireThinPath := os.Getenv("FIRE2_THIN_PATH")
-	if fireThinPath == "" {
-		return errors.New("FIRE2_THIN_PATH is not set")
+	thinPoolConf := os.Getenv("FIRE2_THINPOOL_CONF")
+	if thinPoolConf == "" {
+		thinPoolConf = thin.DefaultConfPath
+	}
+	pool, err := thin.LoadPool(thinPoolConf)
+	if err != nil {
+		return fmt.Errorf("LoadPool: %w", err)
 	}
 
 	client, err := runtime.NewClient(sandboxID)
@@ -60,7 +66,7 @@ func run() error {
 		if err := client.Stop(); err != nil {
 			log.Printf("cleanup: stop: %v", err)
 		}
-		if err := runtime.RemoveSandboxVolume(fireThinPath, sandboxID); err != nil {
+		if err := pool.RemoveVolume(sandboxID); err != nil {
 			log.Printf("cleanup: remove volume: %v", err)
 		}
 		if err := os.RemoveAll(client.Dir); err != nil && !os.IsNotExist(err) {
@@ -68,12 +74,16 @@ func run() error {
 		}
 	}()
 
+	rootDrive, err := pool.CreateVolume(sandboxID)
+	if err != nil {
+		return fmt.Errorf("CreateVolume: %w", err)
+	}
 	if err := client.CreateMachine(runtime.CreateVmRequest{
-		KernelPath:   kernelPath,
-		FireThinPath: fireThinPath,
-		VcpuCount:    1,
-		MemSizeMib:   256,
-		BootArgs:     "console=ttyS0 reboot=k panic=1 pci=off",
+		KernelPath:    kernelPath,
+		RootDrivePath: rootDrive,
+		VcpuCount:     1,
+		MemSizeMib:    256,
+		BootArgs:      "console=ttyS0 reboot=k panic=1 pci=off",
 	}); err != nil {
 		return fmt.Errorf("CreateMachine: %w", err)
 	}

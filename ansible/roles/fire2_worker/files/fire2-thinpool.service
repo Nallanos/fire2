@@ -1,8 +1,8 @@
 [Unit]
 Description=fire2 dm-thin pool (sandbox root drives)
 Documentation=https://github.com/nallanos/fire2
-# fire2-worker@ units Require this one, so restarting it restarts every
-# worker, and a restarting worker reaps all its VMs. There is never a reason
+# fire2-worker Requires this one, so restarting it restarts the worker, and
+# a restarting worker reaps all its VMs. There is never a reason
 # to: once the pool is up, fire2-thinpool-up is a no-op.
 RefuseManualStop=yes
 
