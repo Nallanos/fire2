@@ -12,6 +12,7 @@ import (
 	"time"
 
 	orchestratorv1 "github/nallanos/fire2/gen/orchestrator/v1"
+	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
 )
 
 func detectWorkerAddress() (string, error) {
@@ -234,7 +235,7 @@ func (w *WorkerService) sandboxInventory(ctx context.Context) ([]*orchestratorv1
 		if ctx.Err() != nil {
 			return nil, false
 		}
-		state := "Unknown"
+		state := sandboxpkg.InventoryStateUnknown
 		pctx, cancel := context.WithTimeout(ctx, inventoryProbeTimeout)
 		event, err := client.GetMetrics(pctx)
 		cancel()

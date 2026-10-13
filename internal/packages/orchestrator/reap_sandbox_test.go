@@ -263,14 +263,13 @@ func TestHeartbeatInventory_EmptyVersusAbsent(t *testing.T) {
 	srv := e.server()
 	e.seed(t, ctx, "sbx-inv", sandboxpkg.StatusRunning, 3600, 0, "wk-inv")
 
-	// First complete inventory of the token: liveness delay restarts from now.
-	e.setLastSeen(t, ctx, "sbx-inv", time.Hour)
+	// First complete inventory of the token: a sandbox assigned after the
+	// registration cannot belong to the previous incarnation, so it is spared
+	// even though the inventory does not list it.
 	if err := e.heartbeat(srv, "wk-inv", token, true); err != nil {
 		t.Fatalf("first empty inventory: %v", err)
 	}
-	if age := e.lastSeenAge(t, ctx, "sbx-inv"); age > 5*time.Second {
-		t.Fatalf("first inventory should restart the liveness delay, last seen %s ago", age)
-	}
+	assertStatus(t, ctx, e.sandboxRepo, "sbx-inv", sandboxpkg.StatusRunning)
 
 	// Later empty inventory: the sandbox is not listed, so it ages.
 	e.setLastSeen(t, ctx, "sbx-inv", time.Minute)
@@ -311,17 +310,19 @@ func TestHeartbeatInventory_RunningAdvancesStarting(t *testing.T) {
 	assertStatus(t, ctx, e.sandboxRepo, "sbx-adv", sandboxpkg.StatusRunning)
 }
 
-// A new incarnation restarts the liveness delay once, and the previous
-// incarnation can no longer touch sandboxes (heartbeat or event).
+// A new incarnation proves the previous process (and its VMs) is dead: its
+// unlisted sandboxes fail at once, listed or newer ones are spared, and the
+// previous incarnation can no longer touch anything (heartbeat or event).
 func TestHeartbeatInventory_TokenChangeAndStaleToken(t *testing.T) {
 	ctx := context.Background()
-	e := newReapEnv(t, ctx, 15*time.Second)
+	e := newReapEnv(t, ctx, time.Hour)
 	srv := e.server()
 	oldToken := e.registerWorker(t, ctx, "wk-tok")
-	e.seed(t, ctx, "sbx-tok", sandboxpkg.StatusRunning, 3600, 0, "wk-tok")
+	e.seed(t, ctx, "sbx-dead", sandboxpkg.StatusRunning, 3600, 0, "wk-tok")
+	e.seed(t, ctx, "sbx-listed", sandboxpkg.StatusRunning, 3600, 0, "wk-tok")
 	e.seed(t, ctx, "sbx-start", sandboxpkg.StatusStarting, 3600, 0, "wk-tok")
 
-	if err := e.heartbeat(srv, "wk-tok", oldToken, true, item("sbx-tok", "Running")); err != nil {
+	if err := e.heartbeat(srv, "wk-tok", oldToken, true, item("sbx-dead", "Running"), item("sbx-listed", "Running")); err != nil {
 		t.Fatalf("heartbeat old token: %v", err)
 	}
 
@@ -329,16 +330,18 @@ func TestHeartbeatInventory_TokenChangeAndStaleToken(t *testing.T) {
 	if newToken <= oldToken {
 		t.Fatalf("token must advance: old=%d new=%d", oldToken, newToken)
 	}
+	e.seed(t, ctx, "sbx-new", sandboxpkg.StatusAssigned, 3600, 0, "wk-tok") // assigned to the new incarnation
 
 	// The old incarnation is rejected and leaves no trace.
-	e.setLastSeen(t, ctx, "sbx-tok", time.Minute)
-	err := e.heartbeat(srv, "wk-tok", oldToken, true, item("sbx-tok", "Running"))
+	e.setLastSeen(t, ctx, "sbx-dead", time.Minute)
+	err := e.heartbeat(srv, "wk-tok", oldToken, true, item("sbx-dead", "Running"))
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("stale inventory heartbeat: want FailedPrecondition, got %v", err)
 	}
-	if age := e.lastSeenAge(t, ctx, "sbx-tok"); age < 30*time.Second {
+	if age := e.lastSeenAge(t, ctx, "sbx-dead"); age < 30*time.Second {
 		t.Fatalf("stale heartbeat refreshed a sandbox (last seen %s ago)", age)
 	}
+	assertStatus(t, ctx, e.sandboxRepo, "sbx-dead", sandboxpkg.StatusRunning)
 	_, err = srv.IngestSandboxEvent(ctx, &orchestratorv1.SandboxEvent{
 		SandboxId: "sbx-start", WorkerId: "wk-tok", State: "Running", FencingToken: oldToken,
 	})
@@ -347,29 +350,59 @@ func TestHeartbeatInventory_TokenChangeAndStaleToken(t *testing.T) {
 	}
 	assertStatus(t, ctx, e.sandboxRepo, "sbx-start", sandboxpkg.StatusStarting)
 
-	// The new incarnation's first complete inventory restarts the delay…
-	if err := e.heartbeat(srv, "wk-tok", newToken, true); err != nil {
+	// The new incarnation's first complete inventory fails what it does not list.
+	if err := e.heartbeat(srv, "wk-tok", newToken, true, item("sbx-listed", "Running")); err != nil {
 		t.Fatalf("heartbeat new token: %v", err)
 	}
-	if age := e.lastSeenAge(t, ctx, "sbx-tok"); age > 5*time.Second {
-		t.Fatalf("new token's first inventory should restart the delay, last seen %s ago", age)
+	for _, id := range []string{"sbx-dead", "sbx-start"} {
+		waitForStatus(t, ctx, e.sandboxRepo, id, sandboxpkg.StatusFailed, 10*time.Second)
+		if sbx := assertStatus(t, ctx, e.sandboxRepo, id, sandboxpkg.StatusFailed); sbx.WorkerID != nil {
+			t.Fatalf("%s kept worker link %q", id, *sbx.WorkerID)
+		}
 	}
-	// …only once.
-	e.setLastSeen(t, ctx, "sbx-tok", time.Minute)
+	assertStatus(t, ctx, e.sandboxRepo, "sbx-listed", sandboxpkg.StatusRunning)
+	assertStatus(t, ctx, e.sandboxRepo, "sbx-new", sandboxpkg.StatusAssigned)
+
+	// Only the first inventory of a token does this: later ones leave unlisted
+	// sandboxes to the liveness delay.
 	if err := e.heartbeat(srv, "wk-tok", newToken, true); err != nil {
 		t.Fatalf("second heartbeat new token: %v", err)
 	}
-	if age := e.lastSeenAge(t, ctx, "sbx-tok"); age < 30*time.Second {
-		t.Fatalf("only the first inventory of a token restarts the delay, last seen %s ago", age)
-	}
+	assertStatus(t, ctx, e.sandboxRepo, "sbx-listed", sandboxpkg.StatusRunning)
 
 	// Events from the current incarnation apply.
+	e.seed(t, ctx, "sbx-ev", sandboxpkg.StatusStarting, 3600, 0, "wk-tok")
 	if _, err := srv.IngestSandboxEvent(ctx, &orchestratorv1.SandboxEvent{
-		SandboxId: "sbx-start", WorkerId: "wk-tok", State: "Running", FencingToken: newToken,
+		SandboxId: "sbx-ev", WorkerId: "wk-tok", State: "Running", FencingToken: newToken,
 	}); err != nil {
 		t.Fatalf("current event: %v", err)
 	}
-	assertStatus(t, ctx, e.sandboxRepo, "sbx-start", sandboxpkg.StatusRunning)
+	assertStatus(t, ctx, e.sandboxRepo, "sbx-ev", sandboxpkg.StatusRunning)
+}
+
+// A VM the worker lists but cannot describe is not proof of life: it ages and
+// is failed by the reaper like an unlisted one, freeing its slot.
+func TestHeartbeatInventory_UnknownStateDoesNotKeepAlive(t *testing.T) {
+	ctx := context.Background()
+	e := newReapEnv(t, ctx, 15*time.Second)
+	token := e.registerWorker(t, ctx, "wk-unk")
+	srv := e.server()
+	e.seed(t, ctx, "sbx-stuck", sandboxpkg.StatusRunning, 3600, 0, "wk-unk")
+	e.seed(t, ctx, "sbx-fine", sandboxpkg.StatusRunning, 3600, 0, "wk-unk")
+	e.setLastSeen(t, ctx, "sbx-stuck", 20*time.Second)
+	e.setLastSeen(t, ctx, "sbx-fine", 20*time.Second)
+
+	if err := e.heartbeat(srv, "wk-unk", token, true,
+		item("sbx-stuck", sandboxpkg.InventoryStateUnknown), item("sbx-fine", "Running")); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	if age := e.lastSeenAge(t, ctx, "sbx-stuck"); age < 15*time.Second {
+		t.Fatalf("Unknown sandbox must not be refreshed, last seen %s ago", age)
+	}
+
+	e.runReaper(t, ctx)
+	waitForStatus(t, ctx, e.sandboxRepo, "sbx-stuck", sandboxpkg.StatusFailed, 10*time.Second)
+	assertStatus(t, ctx, e.sandboxRepo, "sbx-fine", sandboxpkg.StatusRunning)
 }
 
 // A sandbox its worker stops listing is failed once the liveness delay passes,
