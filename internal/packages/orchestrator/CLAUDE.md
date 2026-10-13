@@ -48,7 +48,7 @@ Never let two owners race on the same transition. Guards in `UpdateStatus` and `
 - Reconcile: listed sandboxes get `sandboxes.last_seen_at = now()` (and `starting → running` if reported Running). A sandbox listed with state `Unknown` (VM unreadable/stuck) is NOT refreshed, so it ages like an unlisted one. Sandboxes absent from the inventory are not touched either — they age until the reaper fails them.
 - First complete inventory of a new token (`worker.inventory_token`): a new token proves the previous process, and its VMs (ReapOrphans), are dead. Active sandboxes not listed and last seen before `worker.registered_at` are claimed (`cleanup_pending`) and their cleanup (→ `failed`) enqueued in the same transaction, without waiting for the liveness delay. Sandboxes assigned after the registration are spared.
 - `inventory_complete=false` (absent inventory) only updates the worker row. Inventory heartbeats need both `WithTransactions(pool)` and `WithRiverClient`.
-- `IngestSandboxEvent` requires `fencing_token`, rejects a non-current one (`FailedPrecondition`), and applies status changes with `UpdateStatusFenced` (sandbox must be hosted by that worker incarnation).
+- `IngestSandboxEvent` requires `fencing_token`. The `sandbox_events` INSERT itself is fenced (`INSERT … SELECT … FROM worker WHERE id AND fencing_token`; no row → `ErrEventFenced` → `FailedPrecondition`), and status changes use `UpdateStatusFenced` (sandbox must be hosted by that worker incarnation).
 
 ## River queue layout
 
