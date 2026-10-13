@@ -78,46 +78,66 @@ func (s *EventGRPCServer) IngestSandboxEvent(ctx context.Context, req *orchestra
 	return &emptypb.Empty{}, nil
 }
 
-// ReportWorkerHeartbeat upserts the worker row with fresh metrics and a current
-// heartbeat timestamp. The first heartbeat from a new worker acts as self-registration.
+// RegisterWorker starts a new worker incarnation and returns its fencing token.
+// The worker must include this token in all subsequent heartbeats.
+func (s *EventGRPCServer) RegisterWorker(ctx context.Context, req *orchestratorv1.WorkerHeartbeat) (*orchestratorv1.WorkerRegistration, error) {
+	if req == nil || strings.TrimSpace(req.GetWorkerId()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "worker_id is required")
+	}
+
+	w, err := s.workerRepo.Register(ctx, workerFromHeartbeat(req))
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "register worker: %v", err)
+	}
+	return &orchestratorv1.WorkerRegistration{FencingToken: w.FencingToken}, nil
+}
+
+// ReportWorkerHeartbeat updates a registered worker only if its fencing token
+// still identifies the current incarnation. A stale worker cannot reactivate
+// itself or overwrite the replacement's metrics.
 func (s *EventGRPCServer) ReportWorkerHeartbeat(ctx context.Context, req *orchestratorv1.WorkerHeartbeat) (*emptypb.Empty, error) {
 	if req == nil || strings.TrimSpace(req.GetWorkerId()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "worker_id is required")
 	}
+	if req.GetFencingToken() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "fencing_token is required")
+	}
+
+	w := workerFromHeartbeat(req)
+
+	log.Printf("received worker heartbeat: worker_id=%s status=%s address=%s port=%d capacity=%d cpu_usage=%d mem_usage=%d",
+		req.GetWorkerId(), req.GetStatus(), req.GetAddress(), req.GetPort(), req.GetCapacity(), req.GetCpuUsage(), req.GetMemUsage())
+
+	_, err := s.workerRepo.Update(ctx, w)
+	if errors.Is(err, workerpkg.ErrFenced) {
+		return nil, status.Error(codes.FailedPrecondition, "worker fencing token is stale")
+	}
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "update worker: %v", err)
+	}
+
+	return &emptypb.Empty{}, nil
+}
+
+func workerFromHeartbeat(req *orchestratorv1.WorkerHeartbeat) workerpkg.Worker {
 	workerStatus := workerpkg.WorkerStatus(req.GetStatus())
 	switch workerStatus {
 	case workerpkg.WorkerStatusActive, workerpkg.WorkerStatusInactive:
 	default:
 		workerStatus = workerpkg.WorkerStatusActive
 	}
-
-	log.Printf("received worker heartbeat: worker_id=%s status=%s address=%s port=%d capacity=%d cpu_usage=%d mem_usage=%d",
-		req.GetWorkerId(), req.GetStatus(), req.GetAddress(), req.GetPort(), req.GetCapacity(), req.GetCpuUsage(), req.GetMemUsage())
-
-	w := workerpkg.NewWorkerFromHeartbeat(workerpkg.HeartbeatParams{
-		ID:        req.GetWorkerId(),
-		Status:    workerStatus,
-		Address:   req.GetAddress(),
-		Port:      int(req.GetPort()),
-		Capacity:  int(req.GetCapacity()),
-		CpuBudget: int(req.GetCpuBudget()),
-		MemBudget: int(req.GetMemBudget()),
-		CpuUsage:  int(req.GetCpuUsage()),
-		MemUsage:  int(req.GetMemUsage()),
+	return workerpkg.NewWorkerFromHeartbeat(workerpkg.HeartbeatParams{
+		ID:           strings.TrimSpace(req.GetWorkerId()),
+		Status:       workerStatus,
+		Address:      req.GetAddress(),
+		Port:         int(req.GetPort()),
+		Capacity:     int(req.GetCapacity()),
+		CpuBudget:    int(req.GetCpuBudget()),
+		MemBudget:    int(req.GetMemBudget()),
+		CpuUsage:     int(req.GetCpuUsage()),
+		MemUsage:     int(req.GetMemUsage()),
+		FencingToken: req.GetFencingToken(),
 	})
-
-	_, err := s.workerRepo.Update(ctx, w)
-	if err != nil {
-		if errors.Is(err, workerpkg.ErrNotFound) {
-			if _, createErr := s.workerRepo.Create(ctx, w); createErr != nil {
-				return nil, status.Errorf(codes.Internal, "register worker: %v", createErr)
-			}
-			return &emptypb.Empty{}, nil
-		}
-		return nil, status.Errorf(codes.Internal, "update worker: %v", err)
-	}
-
-	return &emptypb.Empty{}, nil
 }
 
 // applyStatusFromState applies a guarded status update based on the reported

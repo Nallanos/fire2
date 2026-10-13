@@ -10,7 +10,7 @@ Entry point for a worker node. Runs the `WorkerService` gRPC server and starts t
 4. Starts `EventReporter` in a goroutine — polls each running sandbox's instance info (Firecracker has no push-based event stream like Docker's), forwards it to the orchestrator via `OrchestratorService.IngestSandboxEvent`.
 5. Serves `WorkerService` gRPC. With `WORKER_PORT` unset or `0` it binds an OS-assigned ephemeral port, reads the actual port back from the listener (`SetListenPort`), and reports it to the orchestrator via heartbeat. A non-zero `WORKER_PORT` pins a specific port.
 
-The worker holds **no database credentials**. Heartbeats are sent to the orchestrator via `OrchestratorService.ReportWorkerHeartbeat`; the orchestrator upserts the worker row. The first heartbeat acts as self-registration.
+The worker holds **no database credentials**. It first calls `OrchestratorService.RegisterWorker` to claim a new fencing token, then includes that token in every `ReportWorkerHeartbeat` call. The orchestrator rejects heartbeats from an older worker incarnation.
 
 ## Environment variables
 

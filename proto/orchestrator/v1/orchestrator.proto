@@ -9,6 +9,7 @@ import "google/protobuf/timestamp.proto";
 
 service OrchestratorService {
   rpc IngestSandboxEvent(SandboxEvent) returns (google.protobuf.Empty);
+  rpc RegisterWorker(WorkerHeartbeat) returns (WorkerRegistration);
   rpc ReportWorkerHeartbeat(WorkerHeartbeat) returns (google.protobuf.Empty);
 }
 
@@ -22,6 +23,7 @@ message WorkerHeartbeat {
   int32  mem_budget = 7;
   int32  cpu_usage  = 8;
   int32  mem_usage  = 9;
+  int64  fencing_token = 10;
 }
 
 message SandboxEvent {
@@ -34,4 +36,8 @@ message SandboxEvent {
   // ("Not started" | "Running" | "Paused").
   string state = 5;
   google.protobuf.Timestamp occurred_at = 9;
+}
+
+message WorkerRegistration {
+  int64 fencing_token = 1;
 }

@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	OrchestratorService_IngestSandboxEvent_FullMethodName    = "/orchestrator.v1.OrchestratorService/IngestSandboxEvent"
+	OrchestratorService_RegisterWorker_FullMethodName        = "/orchestrator.v1.OrchestratorService/RegisterWorker"
 	OrchestratorService_ReportWorkerHeartbeat_FullMethodName = "/orchestrator.v1.OrchestratorService/ReportWorkerHeartbeat"
 )
 
@@ -29,6 +30,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type OrchestratorServiceClient interface {
 	IngestSandboxEvent(ctx context.Context, in *SandboxEvent, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	RegisterWorker(ctx context.Context, in *WorkerHeartbeat, opts ...grpc.CallOption) (*WorkerRegistration, error)
 	ReportWorkerHeartbeat(ctx context.Context, in *WorkerHeartbeat, opts ...grpc.CallOption) (*emptypb.Empty, error)
 }
 
@@ -50,6 +52,16 @@ func (c *orchestratorServiceClient) IngestSandboxEvent(ctx context.Context, in *
 	return out, nil
 }
 
+func (c *orchestratorServiceClient) RegisterWorker(ctx context.Context, in *WorkerHeartbeat, opts ...grpc.CallOption) (*WorkerRegistration, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WorkerRegistration)
+	err := c.cc.Invoke(ctx, OrchestratorService_RegisterWorker_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *orchestratorServiceClient) ReportWorkerHeartbeat(ctx context.Context, in *WorkerHeartbeat, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
@@ -65,6 +77,7 @@ func (c *orchestratorServiceClient) ReportWorkerHeartbeat(ctx context.Context, i
 // for forward compatibility.
 type OrchestratorServiceServer interface {
 	IngestSandboxEvent(context.Context, *SandboxEvent) (*emptypb.Empty, error)
+	RegisterWorker(context.Context, *WorkerHeartbeat) (*WorkerRegistration, error)
 	ReportWorkerHeartbeat(context.Context, *WorkerHeartbeat) (*emptypb.Empty, error)
 	mustEmbedUnimplementedOrchestratorServiceServer()
 }
@@ -78,6 +91,9 @@ type UnimplementedOrchestratorServiceServer struct{}
 
 func (UnimplementedOrchestratorServiceServer) IngestSandboxEvent(context.Context, *SandboxEvent) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method IngestSandboxEvent not implemented")
+}
+func (UnimplementedOrchestratorServiceServer) RegisterWorker(context.Context, *WorkerHeartbeat) (*WorkerRegistration, error) {
+	return nil, status.Error(codes.Unimplemented, "method RegisterWorker not implemented")
 }
 func (UnimplementedOrchestratorServiceServer) ReportWorkerHeartbeat(context.Context, *WorkerHeartbeat) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReportWorkerHeartbeat not implemented")
@@ -121,6 +137,24 @@ func _OrchestratorService_IngestSandboxEvent_Handler(srv interface{}, ctx contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OrchestratorService_RegisterWorker_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WorkerHeartbeat)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrchestratorServiceServer).RegisterWorker(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OrchestratorService_RegisterWorker_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrchestratorServiceServer).RegisterWorker(ctx, req.(*WorkerHeartbeat))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _OrchestratorService_ReportWorkerHeartbeat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(WorkerHeartbeat)
 	if err := dec(in); err != nil {
@@ -149,6 +183,10 @@ var OrchestratorService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "IngestSandboxEvent",
 			Handler:    _OrchestratorService_IngestSandboxEvent_Handler,
+		},
+		{
+			MethodName: "RegisterWorker",
+			Handler:    _OrchestratorService_RegisterWorker_Handler,
 		},
 		{
 			MethodName: "ReportWorkerHeartbeat",

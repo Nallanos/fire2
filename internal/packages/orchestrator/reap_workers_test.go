@@ -24,6 +24,9 @@ type fakeWorkerRepo struct {
 func (f *fakeWorkerRepo) Create(ctx context.Context, w workerpkg.Worker) (workerpkg.Worker, error) {
 	return workerpkg.Worker{}, nil
 }
+func (f *fakeWorkerRepo) Register(ctx context.Context, w workerpkg.Worker) (workerpkg.Worker, error) {
+	return workerpkg.Worker{}, nil
+}
 func (f *fakeWorkerRepo) Get(ctx context.Context, id string) (workerpkg.Worker, error) {
 	return workerpkg.Worker{}, nil
 }

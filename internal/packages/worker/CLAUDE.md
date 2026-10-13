@@ -15,7 +15,7 @@ Worker-side gRPC server, Firecracker sandbox lifecycle management, instance even
 
 `NewWorkerService(OrchestratorServiceClient)` creates the service. It owns:
 - **Capacity enforcement** — `running_sandboxes` is incremented before `CreateSandbox` and decremented on failure.
-- **Heartbeat** — periodically reads CPU/memory usage (`gopsutil`) and calls `OrchestratorService.ReportWorkerHeartbeat` via gRPC. The first heartbeat acts as self-registration on the orchestrator side.
+- **Heartbeat** — registers once through `OrchestratorService.RegisterWorker` to receive a fencing token, then periodically reports CPU/memory usage through `ReportWorkerHeartbeat` with that token. An older incarnation cannot update the worker row.
 - **Sandbox lifecycle** — delegates to `internal/packages/runtime` (Firecracker microVMs), tracked in `runningSandboxes`/`deletingSandboxes` maps.
 - **No DB credentials** — the worker holds no Postgres connection; all persistence goes through the orchestrator.
 

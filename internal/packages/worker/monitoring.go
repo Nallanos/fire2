@@ -3,13 +3,15 @@ package worker
 import (
 	"context"
 	"errors"
-	orchestratorv1 "github/nallanos/fire2/gen/orchestrator/v1"
+	"fmt"
 	"net"
 	"os"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
+
+	orchestratorv1 "github/nallanos/fire2/gen/orchestrator/v1"
 )
 
 func detectWorkerAddress() (string, error) {
@@ -142,6 +144,9 @@ func (w *WorkerService) GetWorkerInfo(ctx context.Context) (Worker, error) {
 
 // UpdateWorker updates the worker's status, resource usage, and heartbeat timestamp in the database.
 func (w *WorkerService) UpdateWorker(ctx context.Context) (string, error) {
+	w.heartbeatMu.Lock()
+	defer w.heartbeatMu.Unlock()
+
 	cpuUsage := readCPUUsagePercent()
 	memUsage := readMemUsageMB()
 	address, err := detectWorkerAddress()
@@ -177,17 +182,33 @@ func (w *WorkerService) UpdateWorker(ctx context.Context) (string, error) {
 	snap := w.worker
 	w.mu.Unlock()
 
-	_, err = w.orchestratorClient.ReportWorkerHeartbeat(ctx, &orchestratorv1.WorkerHeartbeat{
-		WorkerId:  snap.ID,
-		Status:    string(snap.Status),
-		Address:   snap.Address,
-		Port:      int32(snap.Port),
-		Capacity:  int32(snap.Capacity),
-		CpuBudget: int32(snap.Budget.Cpu_budget),
-		MemBudget: int32(snap.Budget.Mem_budget),
-		CpuUsage:  int32(snap.cpu_usage),
-		MemUsage:  int32(snap.mem_usage),
-	})
+	heartbeat := &orchestratorv1.WorkerHeartbeat{
+		WorkerId:     snap.ID,
+		Status:       string(snap.Status),
+		Address:      snap.Address,
+		Port:         int32(snap.Port),
+		Capacity:     int32(snap.Capacity),
+		CpuBudget:    int32(snap.Budget.Cpu_budget),
+		MemBudget:    int32(snap.Budget.Mem_budget),
+		CpuUsage:     int32(snap.cpu_usage),
+		MemUsage:     int32(snap.mem_usage),
+		FencingToken: snap.FencingToken,
+	}
+	if heartbeat.FencingToken == 0 {
+		registration, err := w.orchestratorClient.RegisterWorker(ctx, heartbeat)
+		if err != nil {
+			return "", err
+		}
+		if registration == nil || registration.GetFencingToken() <= 0 {
+			return "", fmt.Errorf("register worker %s: invalid fencing token", snap.ID)
+		}
+		heartbeat.FencingToken = registration.GetFencingToken()
+		w.mu.Lock()
+		w.worker.FencingToken = heartbeat.FencingToken
+		w.mu.Unlock()
+	}
+
+	_, err = w.orchestratorClient.ReportWorkerHeartbeat(ctx, heartbeat)
 	if err != nil {
 		return "", err
 	}
