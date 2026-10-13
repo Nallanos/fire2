@@ -33,8 +33,8 @@ type EventGRPCServer struct {
 	// pool runs the heartbeat transaction (fencing check + worker update +
 	// inventory reconciliation). Required to accept heartbeat inventories.
 	pool *pgxpool.Pool
-	// riverClient enqueues orphan removals in the heartbeat transaction. When
-	// nil, orphans are only logged.
+	// riverClient enqueues orphan removals and lost-sandbox cleanups in the
+	// heartbeat transaction. Required to accept heartbeat inventories.
 	riverClient *river.Client[pgx.Tx]
 }
 
@@ -48,7 +48,7 @@ func WithTransactions(pool *pgxpool.Pool) EventServerOption {
 }
 
 // WithRiverClient lets heartbeat reconciliation enqueue removal of orphan
-// sandboxes.
+// sandboxes and cleanup of sandboxes lost in a worker restart.
 func WithRiverClient(c *river.Client[pgx.Tx]) EventServerOption {
 	return func(s *EventGRPCServer) { s.riverClient = c }
 }
@@ -179,7 +179,7 @@ func heartbeatError(err error) error {
 // reconciles the reported inventory against the database in a single
 // transaction. A stale token fails the worker update and rolls everything back.
 func (s *EventGRPCServer) reconcileHeartbeat(ctx context.Context, w workerpkg.Worker, inventory []*orchestratorv1.SandboxInventoryItem) error {
-	if s.pool == nil {
+	if s.pool == nil || s.riverClient == nil {
 		return errors.New("inventory reconciliation is not configured")
 	}
 
@@ -211,22 +211,24 @@ func (s *EventGRPCServer) reconcileHeartbeat(ctx context.Context, w workerpkg.Wo
 	if err != nil {
 		return err
 	}
-	orphans, err := s.sandboxRepo.WithTx(tx).ReconcileInventory(ctx, w.ID, first, items)
+	res, err := s.sandboxRepo.WithTx(tx).ReconcileInventory(ctx, w.ID, first, items)
 	if err != nil {
 		return err
 	}
 
-	if len(orphans) > 0 {
-		if s.riverClient == nil {
-			log.Printf("heartbeat: worker=%s reports %d orphan sandbox(es) %v; no river client, not removing", w.ID, len(orphans), orphans)
-		} else {
-			params := make([]river.InsertManyParams, 0, len(orphans))
-			for _, id := range orphans {
-				params = append(params, river.InsertManyParams{Args: RemoveOrphanArgs{WorkerID: w.ID, SandboxID: id}})
-			}
-			if _, err := s.riverClient.InsertManyTx(ctx, tx, params); err != nil {
-				return err
-			}
+	// A new token proves the previous process is dead and so are its VMs
+	// (ReapOrphans kills them at startup): fail them now instead of waiting
+	// for the liveness delay.
+	params := make([]river.InsertManyParams, 0, len(res.Lost)+len(res.Orphans))
+	for _, id := range res.Lost {
+		params = append(params, cleanupParams(id, sandboxpkg.StatusFailed))
+	}
+	for _, id := range res.Orphans {
+		params = append(params, river.InsertManyParams{Args: RemoveOrphanArgs{WorkerID: w.ID, SandboxID: id}})
+	}
+	if len(params) > 0 {
+		if _, err := s.riverClient.InsertManyTx(ctx, tx, params); err != nil {
+			return err
 		}
 	}
 

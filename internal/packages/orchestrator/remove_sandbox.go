@@ -34,4 +34,3 @@ func removeSandboxOnWorker(ctx context.Context, workerRepo workerpkg.Repository,
 	}
 	return nil
 }
-

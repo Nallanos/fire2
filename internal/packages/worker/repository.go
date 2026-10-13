@@ -108,7 +108,8 @@ func (r *PostgresRepository) Register(ctx context.Context, w Worker) (Worker, er
 			cpu_usage = EXCLUDED.cpu_usage,
 			mem_usage = EXCLUDED.mem_usage,
 			last_heartbeat = EXCLUDED.last_heartbeat,
-			fencing_token = worker.fencing_token + 1
+			fencing_token = worker.fencing_token + 1,
+			registered_at = now()
 		RETURNING ` + workerColumns
 
 	if w.Last_heartbeat.IsZero() {
