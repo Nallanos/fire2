@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	runtimeClient "github/nallanos/fire2/internal/packages/runtime"
 	"github/nallanos/fire2/internal/packages/thin"
@@ -30,6 +31,11 @@ type vm interface {
 type vmFactory func(in CreateInput) (vm, error)
 
 const defaultBootArgs = "console=ttyS0 reboot=k panic=1 pci=off"
+
+// startTimeout bounds booting a VM. The SDK bounds each of its steps (3s for
+// the API socket, 500ms per API call), but nothing bounds the whole: a stuck
+// start would block the sandbox's actor, and with it Remove.
+const startTimeout = 30 * time.Second
 
 // Config locates what the worker needs on disk to boot Firecracker VMs.
 type Config struct {
@@ -131,7 +137,41 @@ func (f *firecrackerVM) Create(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
-	return f.client.Start()
+	return startBounded(ctx, f.client.Start, f.client.Stop, startTimeout)
+}
+
+// startBounded runs start, and if it has not returned after timeout (or ctx
+// is done first, e.g. worker shutdown), kills the VM with stop so start fails
+// and returns. It always waits for start to return: the caller keeps sole
+// ownership of the VM, and cleans up as after any failed create.
+//
+// A deadline cannot simply be passed to the SDK's Machine.Start: it stops the
+// VM whenever that ctx is done, so cancelling it after a successful start
+// would kill the VM (see runtime.Client.Start).
+func startBounded(ctx context.Context, start, stop func() error, timeout time.Duration) error {
+	done := make(chan error, 1)
+	go func() { done <- start() }()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	var cause error
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		cause = fmt.Errorf("start timed out after %s", timeout)
+	case <-ctx.Done():
+		cause = fmt.Errorf("start aborted: %w", ctx.Err())
+	}
+
+	stopErr := stop()
+	startErr := <-done
+	if startErr == nil {
+		// Start won the race against stop: the VM booted, then got killed.
+		startErr = errors.New("vm stopped after start")
+	}
+	return errors.Join(cause, stopErr, startErr)
 }
 
 func (f *firecrackerVM) Stop() error                              { return f.client.Stop() }

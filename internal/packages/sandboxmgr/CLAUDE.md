@@ -22,7 +22,7 @@ A Service reports a state only when it differs from the last one (diff-only). Th
 
 `run` selects over: commands (create / stop / remove, each with a reply channel), the VM's exit (`Wait`), a 2s state poll, and ctx. Only this goroutine touches the VM, so the VM needs no lock.
 
-- **create** — builds the VM (creates its directory), creates the thin volume (`thin.Pool.CreateVolume`, pure Go), boots it. On failure it cleans up and the actor exits.
+- **create** — builds the VM (creates its directory), creates the thin volume (`thin.Pool.CreateVolume`, pure Go), boots it. The boot is bounded (`startBounded`, 30s, or worker shutdown): on timeout the VM is killed so `Start` returns, never abandoned. On failure it cleans up and the actor exits.
 - **stop** — kills the VM; the sandbox stays tracked with its volume and directory, and turns DEAD once the process exits.
 - **remove** — stop + volume + directory, then the actor exits.
 - A panic is recovered and turns the sandbox DEAD.
