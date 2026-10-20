@@ -95,24 +95,18 @@ func (s *EventGRPCServer) IngestSandboxEvent(ctx context.Context, req *orchestra
 	if token <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "fencing_token is required")
 	}
-	current, err := s.workerRepo.Get(ctx, workerID)
-	if errors.Is(err, workerpkg.ErrNotFound) {
-		return nil, status.Error(codes.FailedPrecondition, "worker is not registered")
-	}
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "get worker: %v", err)
-	}
-	if current.FencingToken != token {
-		return nil, status.Error(codes.FailedPrecondition, "worker fencing token is stale")
-	}
-
-	_, err = s.eventRepo.CreateSandboxEvent(ctx, SandboxEvent{
+	_, err := s.eventRepo.CreateSandboxEvent(ctx, SandboxEvent{
 		ID:         eventID,
 		SandboxID:  sandboxID,
 		WorkerID:   workerID,
 		State:      state,
 		OccurredAt: occurredAt,
+
+		FencingToken: token,
 	})
+	if errors.Is(err, ErrEventFenced) {
+		return nil, status.Error(codes.FailedPrecondition, "worker is not registered or its fencing token is stale")
+	}
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "store sandbox event: %v", err)
 	}
