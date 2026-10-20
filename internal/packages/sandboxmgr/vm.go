@@ -16,9 +16,10 @@ import (
 type vm interface {
 	// Create provisions the VM's resources and boots it.
 	Create(ctx context.Context) error
-	// Stop kills the VM. A no-op if it never started.
+	// Stop kills the VM and returns once it is gone. A no-op if it never
+	// started.
 	Stop() error
-	// Wait blocks until the VM's process exits.
+	// Wait blocks until the VM is gone.
 	Wait(ctx context.Context) error
 	// State samples the VM's state. An error means it could not be queried.
 	State(ctx context.Context) (State, error)
@@ -30,33 +31,49 @@ type vm interface {
 // runs inside the sandbox's Service, once the ID is registered in the map.
 type vmFactory func(in CreateInput) (vm, error)
 
+// vmAttacher re-attaches to the vm of a sandbox a previous worker process
+// left running. It fails if the sandbox has no live shim.
+type vmAttacher func(sandboxID string) (vm, error)
+
 const defaultBootArgs = "console=ttyS0 reboot=k panic=1 pci=off"
 
-// startTimeout bounds booting a VM. The SDK bounds each of its steps (3s for
-// the API socket, 500ms per API call), but nothing bounds the whole: a stuck
-// start would block the sandbox's actor, and with it Remove.
-const startTimeout = 30 * time.Second
+const (
+	// bootTimeout bounds how long a new VM may take to report Running.
+	// Without it, a VM stuck booting would block its actor, and with it
+	// Remove, while being reported STARTING (which refreshes last_seen_at,
+	// so liveness never fires).
+	bootTimeout = 30 * time.Second
+	bootPoll    = 50 * time.Millisecond
+)
 
 // Config locates what the worker needs on disk to boot Firecracker VMs.
 type Config struct {
-	ImageDir     string // holds vmlinux
-	ThinPoolConf string // thinpool.conf of the pool holding sandbox root drives
-	BaseDir      string // per-sandbox directories (socket); locked by one worker
+	ImageDir        string // holds vmlinux
+	ThinPoolConf    string // thinpool.conf of the pool holding sandbox root drives
+	BaseDir         string // per-sandbox directories; locked by one worker
+	ShimPath        string // fire2-shim binary, one per VM
+	FirecrackerPath string // firecracker binary, run by the shim
 }
 
-// ConfigFromEnv reads FIRECRACKER_IMAGE_DIR, FIRE2_THINPOOL_CONF and the
-// sandbox base dir once. Missing values are reported when a sandbox is
-// created, so a worker without Firecracker can still start (local dev).
+// ConfigFromEnv reads FIRECRACKER_IMAGE_DIR, FIRE2_THINPOOL_CONF,
+// FIRE2_SHIM_PATH, FIRECRACKER_BIN and the sandbox base dir once. Missing
+// values are reported when a sandbox is created, so a worker without
+// Firecracker can still start (local dev).
 func ConfigFromEnv() Config {
-	thinPoolConf := os.Getenv("FIRE2_THINPOOL_CONF")
-	if thinPoolConf == "" {
-		thinPoolConf = thin.DefaultConfPath
-	}
 	return Config{
-		ImageDir:     os.Getenv("FIRECRACKER_IMAGE_DIR"),
-		ThinPoolConf: thinPoolConf,
-		BaseDir:      runtimeClient.SandboxBaseDir(),
+		ImageDir:        os.Getenv("FIRECRACKER_IMAGE_DIR"),
+		ThinPoolConf:    envOr("FIRE2_THINPOOL_CONF", thin.DefaultConfPath),
+		BaseDir:         runtimeClient.SandboxBaseDir(),
+		ShimPath:        envOr("FIRE2_SHIM_PATH", "/opt/fire2/fire2-shim"),
+		FirecrackerPath: envOr("FIRECRACKER_BIN", "/usr/local/bin/firecracker"),
 	}
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 func (c Config) kernelPath() (string, error) {
@@ -92,17 +109,23 @@ func (c Config) newFirecrackerVM(in CreateInput) (vm, error) {
 	if err != nil {
 		return nil, err
 	}
-	pool, err := c.pool()
-	if err != nil {
-		return nil, err
-	}
 	// Creates the sandbox directory: it must exist before the volume (see
 	// runtime.ReapSandbox).
 	client, err := runtimeClient.NewClient(in.ID)
 	if err != nil {
 		return nil, fmt.Errorf("create runtime client for sandbox %s: %w", in.ID, err)
 	}
-	return &firecrackerVM{client: client, pool: pool, kernelPath: kernelPath, in: in}, nil
+	return &firecrackerVM{client: client, cfg: c, kernelPath: kernelPath, in: in}, nil
+}
+
+// attach is the production vmAttacher. It needs nothing but the shim: a
+// missing pool config must not make a live VM look orphaned.
+func (c Config) attach(sandboxID string) (vm, error) {
+	client, err := runtimeClient.Attach(sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	return &firecrackerVM{client: client, cfg: c, in: CreateInput{ID: sandboxID}}, nil
 }
 
 // reap tears down whatever sandboxID left on disk, for IDs no Service owns.
@@ -118,60 +141,35 @@ func (c Config) listDisk() ([]string, error) {
 
 type firecrackerVM struct {
 	client     *runtimeClient.Client
-	pool       thin.Pool
+	cfg        Config
 	kernelPath string
 	in         CreateInput
 }
 
+// Create creates the root volume, spawns the shim (which boots the VM from
+// its config file), then waits, bounded, for the VM to run. On failure the
+// caller stops and cleans up as after any failed create.
 func (f *firecrackerVM) Create(ctx context.Context) error {
-	rootDrive, err := f.pool.CreateVolume(f.in.ID)
+	pool, err := f.cfg.pool()
 	if err != nil {
 		return err
 	}
-	if err := f.client.CreateMachine(runtimeClient.CreateVmRequest{
-		KernelPath:    f.kernelPath,
-		RootDrivePath: rootDrive,
-		VcpuCount:     f.in.VcpuCount,
-		MemSizeMib:    f.in.MemSizeMib,
-		BootArgs:      defaultBootArgs,
+	rootDrive, err := pool.CreateVolume(f.in.ID)
+	if err != nil {
+		return err
+	}
+	if err := f.client.Spawn(runtimeClient.SpawnRequest{
+		ShimPath:        f.cfg.ShimPath,
+		FirecrackerPath: f.cfg.FirecrackerPath,
+		KernelPath:      f.kernelPath,
+		RootDrivePath:   rootDrive,
+		VcpuCount:       f.in.VcpuCount,
+		MemSizeMib:      f.in.MemSizeMib,
+		BootArgs:        defaultBootArgs,
 	}); err != nil {
 		return err
 	}
-	return startBounded(ctx, f.client.Start, f.client.Stop, startTimeout)
-}
-
-// startBounded runs start, and if it has not returned after timeout (or ctx
-// is done first, e.g. worker shutdown), kills the VM with stop so start fails
-// and returns. It always waits for start to return: the caller keeps sole
-// ownership of the VM, and cleans up as after any failed create.
-//
-// A deadline cannot simply be passed to the SDK's Machine.Start: it stops the
-// VM whenever that ctx is done, so cancelling it after a successful start
-// would kill the VM (see runtime.Client.Start).
-func startBounded(ctx context.Context, start, stop func() error, timeout time.Duration) error {
-	done := make(chan error, 1)
-	go func() { done <- start() }()
-
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-
-	var cause error
-	select {
-	case err := <-done:
-		return err
-	case <-timer.C:
-		cause = fmt.Errorf("start timed out after %s", timeout)
-	case <-ctx.Done():
-		cause = fmt.Errorf("start aborted: %w", ctx.Err())
-	}
-
-	stopErr := stop()
-	startErr := <-done
-	if startErr == nil {
-		// Start won the race against stop: the VM booted, then got killed.
-		startErr = errors.New("vm stopped after start")
-	}
-	return errors.Join(cause, stopErr, startErr)
+	return waitRunning(ctx, f.client.State, f.client.Done(), bootTimeout, bootPoll)
 }
 
 func (f *firecrackerVM) Stop() error                              { return f.client.Stop() }
@@ -182,11 +180,44 @@ func (f *firecrackerVM) State(ctx context.Context) (State, error) { return f.cli
 // the volume could not be removed, so the reconciliation finds it again once
 // the sandbox is untracked.
 func (f *firecrackerVM) Cleanup() error {
-	if err := f.pool.RemoveVolume(f.in.ID); err != nil {
+	if err := f.cfg.RemoveVolume(f.in.ID); err != nil {
 		return err
 	}
 	if err := os.RemoveAll(f.client.Dir); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove sandbox dir: %w", err)
 	}
 	return nil
+}
+
+// waitRunning polls state until the VM runs. It fails if the VM is gone
+// first (gone closes), after timeout, or once ctx is done (worker shutdown).
+func waitRunning(ctx context.Context, state func(context.Context) (State, error), gone <-chan struct{}, timeout, poll time.Duration) error {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(poll)
+	defer tick.Stop()
+
+	var last error
+	for {
+		qctx, cancel := context.WithTimeout(ctx, stateQueryTimeout)
+		st, err := state(qctx)
+		cancel()
+		if err == nil && st == StateRunning {
+			return nil
+		}
+		if err == nil {
+			err = fmt.Errorf("state %s", st)
+		}
+		last = err
+
+		select {
+		case <-gone:
+			return errors.New("vm exited while booting (see firecracker.log in the sandbox dir)")
+		case <-deadline.C:
+			return fmt.Errorf("vm not running after %s: %w", timeout, last)
+		case <-ctx.Done():
+			return fmt.Errorf("boot aborted: %w", ctx.Err())
+		case <-tick.C:
+		}
+	}
 }

@@ -70,6 +70,7 @@ type harness struct {
 
 	mu       sync.Mutex
 	vms      map[string]*fakeVM
+	alive    map[string]*fakeVM // VMs a previous worker left running
 	reaped   []string
 	disk     []string
 	reapGate chan struct{}
@@ -81,7 +82,7 @@ func newHarness(t *testing.T, template func(id string) *fakeVM) *harness {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	h := &harness{vms: make(map[string]*fakeVM)}
+	h := &harness{vms: make(map[string]*fakeVM), alive: make(map[string]*fakeVM)}
 	newVM := func(in CreateInput) (vm, error) {
 		v := template(in.ID)
 		h.mu.Lock()
@@ -104,7 +105,15 @@ func newHarness(t *testing.T, template func(id string) *fakeVM) *harness {
 		defer h.mu.Unlock()
 		return append([]string(nil), h.disk...), nil
 	}
-	h.m = newManager(ctx, newVM, reap, listDisk)
+	attach := func(id string) (vm, error) {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if v, ok := h.alive[id]; ok {
+			return v, nil
+		}
+		return nil, errors.New("no live shim")
+	}
+	h.m = newManager(ctx, newVM, attach, reap, listDisk)
 	h.m.pollInterval = time.Millisecond
 	return h
 }
@@ -424,5 +433,75 @@ func TestFullEventBufferDoesNotBlockServices(t *testing.T) {
 	// The state is still recorded for the heartbeat.
 	if st, _ := snapshotState(h.m, sbx); st != StateRunning {
 		t.Fatalf("snapshot state = %v, want RUNNING", st)
+	}
+}
+
+// A restarted worker takes over the VMs whose shim survived, in their current
+// state, and reaps whatever it cannot attach to.
+func TestRecoverAdoptsLiveShimsAndReapsTheRest(t *testing.T) {
+	h := newHarness(t, runningVM)
+	live := runningVM(sbx)
+	lost := "6f1c2a52-58a4-4f4e-9a5f-0d1d2f6b7c05"
+	unreachable := "6f1c2a52-58a4-4f4e-9a5f-0d1d2f6b7c06"
+	unknownVM := &fakeVM{stateErr: errors.New("api timeout"), exit: make(chan error, 1)}
+	h.mu.Lock()
+	h.disk = []string{sbx, lost, unreachable}
+	h.alive[sbx] = live
+	h.alive[unreachable] = unknownVM
+	h.mu.Unlock()
+
+	n, err := h.m.Recover()
+	if err != nil || n != 2 {
+		t.Fatalf("Recover = %d, %v; want 2 adopted", n, err)
+	}
+	if got := h.reapedIDs(); len(got) != 1 || got[0] != lost {
+		t.Fatalf("reaped = %v, want only [%s]", got, lost)
+	}
+	if st, ok := snapshotState(h.m, sbx); !ok || st != StateRunning {
+		t.Fatalf("adopted sandbox state = %v (tracked=%v), want RUNNING", st, ok)
+	}
+	if st, _ := snapshotState(h.m, unreachable); st != StateUnknown {
+		t.Fatalf("adopted sandbox whose API fails = %v, want UNKNOWN", st)
+	}
+
+	// The adopted VM is watched like any other: its exit turns it DEAD.
+	live.exit <- errors.New("firecracker exited with code 137")
+	for {
+		ev := nextEvent(t, h.m)
+		if ev.SandboxID == sbx && ev.State == StateDead {
+			break
+		}
+	}
+
+	// And removed like any other.
+	if err := h.m.Remove(sbx); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	if !live.stopped || !live.cleaned {
+		t.Fatalf("stopped=%v cleaned=%v, want both", live.stopped, live.cleaned)
+	}
+}
+
+// An adopted sandbox counts against capacity and makes Create idempotent.
+func TestRecoveredSandboxesAreTracked(t *testing.T) {
+	h := newHarness(t, runningVM)
+	h.mu.Lock()
+	h.disk = []string{sbx}
+	h.alive[sbx] = runningVM(sbx)
+	h.mu.Unlock()
+	if _, err := h.m.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	h.m.SetCapacity(1)
+	if err := h.m.Create(CreateInput{ID: sbx}); err != nil {
+		t.Fatalf("Create of an adopted sandbox = %v, want idempotent nil", err)
+	}
+	if h.vm(sbx) != nil {
+		t.Fatal("Create of an adopted sandbox must not build a new VM")
+	}
+	if err := h.m.Create(CreateInput{ID: "6f1c2a52-58a4-4f4e-9a5f-0d1d2f6b7c07"}); !errors.Is(err, ErrAtCapacity) {
+		t.Fatalf("Create = %v, want ErrAtCapacity", err)
 	}
 }

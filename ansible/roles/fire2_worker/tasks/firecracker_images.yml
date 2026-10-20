@@ -13,8 +13,8 @@
   ansible.builtin.file:
     path: "{{ firecracker_images_dir }}"
     state: directory
-    owner: "{{ fire2_user }}"
-    group: "{{ fire2_group }}"
+    owner: root
+    group: root
     mode: "0755"
   when: firecracker_kernel_url | length > 0 or firecracker_rootfs_url | length > 0
 
@@ -23,8 +23,8 @@
     url: "{{ firecracker_kernel_url }}"
     dest: "{{ firecracker_images_dir }}/vmlinux"
     checksum: "{{ ('sha256:' ~ firecracker_kernel_sha256) if firecracker_kernel_sha256 | length > 0 else omit }}"
-    owner: "{{ fire2_user }}"
-    group: "{{ fire2_group }}"
+    owner: root
+    group: root
     mode: "0644"
   when: firecracker_kernel_url | length > 0
 
@@ -33,7 +33,7 @@
     url: "{{ firecracker_rootfs_url }}"
     dest: "{{ firecracker_images_dir }}/rootfs.ext4"
     checksum: "{{ ('sha256:' ~ firecracker_rootfs_sha256) if firecracker_rootfs_sha256 | length > 0 else omit }}"
-    owner: "{{ fire2_user }}"
-    group: "{{ fire2_group }}"
+    owner: root
+    group: root
     mode: "0644"
   when: firecracker_rootfs_url | length > 0

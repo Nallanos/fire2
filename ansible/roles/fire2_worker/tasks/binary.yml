@@ -1,18 +1,30 @@
 ---
+# Root-owned, like everything in it: the worker and its shims run as root, and
+# whoever owns the directory can swap any file in it.
 - name: Create install directory
   ansible.builtin.file:
     path: "{{ fire2_install_dir }}"
     state: directory
-    owner: "{{ fire2_user }}"
-    group: "{{ fire2_group }}"
+    owner: root
+    group: root
     mode: "0755"
 
 - name: Deploy worker binary
   ansible.builtin.copy:
     src: "{{ playbook_dir }}/../dist/worker"
     dest: "{{ fire2_install_dir }}/worker"
-    owner: "{{ fire2_user }}"
-    group: "{{ fire2_group }}"
+    owner: root
+    group: root
     mode: "0755"
   notify: restart fire2-worker
+
+# Replacing the file does not touch running shims: they keep the old binary
+# open, and the worker <-> shim protocol stays backward compatible.
+- name: Deploy shim binary
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../dist/fire2-shim"
+    dest: "{{ fire2_install_dir }}/fire2-shim"
+    owner: root
+    group: root
+    mode: "0755"
 
