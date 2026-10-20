@@ -8,6 +8,7 @@ import (
 
 	"github/nallanos/fire2/internal/packages/orchestrator"
 	runtimeClient "github/nallanos/fire2/internal/packages/runtime"
+	"github/nallanos/fire2/internal/packages/sandboxmgr"
 	tailscalepkg "github/nallanos/fire2/internal/packages/tailscale"
 	workerpkg "github/nallanos/fire2/internal/packages/worker"
 )
@@ -62,11 +63,23 @@ func main() {
 
 	ctx := context.Background()
 
+	sandboxCfg := sandboxmgr.ConfigFromEnv()
+
+	// One worker per host: this process owns every sandbox in the base dir
+	// and reaps whatever it does not track, so a second one would reap the
+	// first one's sandboxes. Lock before reaping anything. The lock lives
+	// as long as the file stays open, i.e. the whole process.
+	baseDirLock, err := sandboxmgr.LockBaseDir(sandboxCfg.BaseDir)
+	if err != nil {
+		log.Fatalf("worker startup: %v", err)
+	}
+	defer baseDirLock.Close()
+
 	// Firecracker keeps no state of its own across restarts — kill any VM
 	// left running by a previous crash/redeploy of this worker and clean up
-	// its socket/directory. The orchestrator's retry policy re-creates the
-	// sandbox; this just guarantees a clean slate for that retry.
-	if err := runtimeClient.ReapOrphans(runtimeClient.SandboxBaseDir()); err != nil {
+	// its volume and directory. The orchestrator's retry policy re-creates
+	// the sandbox; this just guarantees a clean slate for that retry.
+	if err := runtimeClient.ReapOrphans(sandboxCfg.BaseDir, sandboxCfg.RemoveVolume); err != nil {
 		log.Printf("reap orphaned sandboxes: %v", err)
 	}
 
@@ -76,13 +89,16 @@ func main() {
 	}
 	defer eventClient.Close()
 
-	workerService := workerpkg.NewWorkerService(eventClient.Client())
+	sandboxes := sandboxmgr.New(ctx, sandboxCfg)
+	go sandboxes.Run(ctx, 0)
+
+	workerService := workerpkg.NewWorkerService(eventClient.Client(), sandboxes)
 	workerService.SetWorkerIdentity(workerID, advertisedHost)
 	workerService.SetWorkerBudget(cpuBudget, memBudget)
 	workerGRPCServer := workerpkg.NewWorkerGRPCServer(workerService)
 
 	reporter := workerpkg.NewEventReporter(eventClient.Client(), workerID, workerService)
-	go reporter.Run(context.Background())
+	go reporter.Run(ctx)
 
 	if err := workerpkg.ServeGRPC(grpcBindHost+":"+workerPort, workerGRPCServer); err != nil {
 		log.Fatal(err)

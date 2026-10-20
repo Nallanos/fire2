@@ -4,17 +4,15 @@ import (
 	"time"
 
 	orchestratorv1 "github/nallanos/fire2/gen/orchestrator/v1"
-	runtimeClient "github/nallanos/fire2/internal/packages/runtime"
 )
 
 const defaultHeartbeatInterval = 5 * time.Second
 const heartbeatRequestTimeout = 3 * time.Second
 
-func NewWorkerService(orchestratorClient orchestratorv1.OrchestratorServiceClient) *WorkerService {
+func NewWorkerService(orchestratorClient orchestratorv1.OrchestratorServiceClient, sandboxes SandboxManager) *WorkerService {
 	return &WorkerService{
 		orchestratorClient: orchestratorClient,
-		runningSandboxes:   make(map[string]*runtimeClient.Client),
-		deletingSandboxes:  make(map[string]struct{}),
+		sandboxes:          sandboxes,
 	}
 }
 

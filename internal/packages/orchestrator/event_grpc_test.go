@@ -49,7 +49,7 @@ func sandboxStatus(t *testing.T, ctx context.Context, repo sandboxpkg.Repository
 
 // ingestEvent sends an event as worker "wk-test", which the test must have
 // registered (seedWorker) beforehand; the event carries its current token.
-func ingestEvent(t *testing.T, ctx context.Context, srv *EventGRPCServer, sandboxID, state string) {
+func ingestEvent(t *testing.T, ctx context.Context, srv *EventGRPCServer, sandboxID string, state orchestratorv1.SandboxState) {
 	t.Helper()
 	w, err := srv.workerRepo.Get(ctx, "wk-test")
 	if err != nil {
@@ -68,12 +68,11 @@ func ingestEvent(t *testing.T, ctx context.Context, srv *EventGRPCServer, sandbo
 
 // H1: die event while status=pending → status unchanged, "ignored" logged.
 //
-// Skipped: statusTransitionForState has no failure state anymore (see its
-// doc comment) — firecracker-go-sdk's InstanceInfo.State never reports
-// "died"/"crashed" the way Docker's die/kill/oom did, so there's nothing
-// left to guard here. Re-enable once a real failure signal exists.
+// Skipped: statusTransitionForState has no failure state (see its doc
+// comment) — a DEAD sandbox is failed by the heartbeat inventory, which is
+// the authoritative path; events are best-effort.
 func TestEventGuard_DieWhilePending(t *testing.T) {
-	t.Skip("no Firecracker equivalent to Docker's die event — see statusTransitionForState")
+	t.Skip("DEAD is acted on by the heartbeat inventory, not events — see statusTransitionForState")
 	ctx := context.Background()
 	pool := testutil.SetupPostgres(t, ctx)
 	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
@@ -87,7 +86,7 @@ func TestEventGuard_DieWhilePending(t *testing.T) {
 	defer log.SetOutput(os.Stderr)
 
 	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo)
-	ingestEvent(t, ctx, srv, "sbx-h1", "die")
+	ingestEvent(t, ctx, srv, "sbx-h1", orchestratorv1.SandboxState_SANDBOX_STATE_DEAD)
 
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h1") != sandboxpkg.StatusPending {
 		t.Fatalf("expected pending unchanged")
@@ -101,7 +100,7 @@ func TestEventGuard_DieWhilePending(t *testing.T) {
 //
 // Skipped: see TestEventGuard_DieWhilePending.
 func TestEventGuard_DieWhileScheduling(t *testing.T) {
-	t.Skip("no Firecracker equivalent to Docker's die event — see statusTransitionForState")
+	t.Skip("DEAD is acted on by the heartbeat inventory, not events — see statusTransitionForState")
 	ctx := context.Background()
 	pool := testutil.SetupPostgres(t, ctx)
 	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
@@ -115,7 +114,7 @@ func TestEventGuard_DieWhileScheduling(t *testing.T) {
 	defer log.SetOutput(os.Stderr)
 
 	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo)
-	ingestEvent(t, ctx, srv, "sbx-h2", "die")
+	ingestEvent(t, ctx, srv, "sbx-h2", orchestratorv1.SandboxState_SANDBOX_STATE_DEAD)
 
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h2") != sandboxpkg.StatusScheduling {
 		t.Fatalf("expected scheduling unchanged")
@@ -129,7 +128,7 @@ func TestEventGuard_DieWhileScheduling(t *testing.T) {
 //
 // Skipped: see TestEventGuard_DieWhilePending.
 func TestEventGuard_DieWhileAssigned(t *testing.T) {
-	t.Skip("no Firecracker equivalent to Docker's die event — see statusTransitionForState")
+	t.Skip("DEAD is acted on by the heartbeat inventory, not events — see statusTransitionForState")
 	ctx := context.Background()
 	pool := testutil.SetupPostgres(t, ctx)
 	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
@@ -143,7 +142,7 @@ func TestEventGuard_DieWhileAssigned(t *testing.T) {
 	defer log.SetOutput(os.Stderr)
 
 	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo)
-	ingestEvent(t, ctx, srv, "sbx-h3", "die")
+	ingestEvent(t, ctx, srv, "sbx-h3", orchestratorv1.SandboxState_SANDBOX_STATE_DEAD)
 
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h3") != sandboxpkg.StatusAssigned {
 		t.Fatalf("expected assigned unchanged")
@@ -170,10 +169,10 @@ func TestEventGuard_RunningWhileStarting(t *testing.T) {
 	defer log.SetOutput(os.Stderr)
 
 	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo)
-	ingestEvent(t, ctx, srv, "sbx-h4", "Running")
+	ingestEvent(t, ctx, srv, "sbx-h4", orchestratorv1.SandboxState_SANDBOX_STATE_RUNNING)
 
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h4") != sandboxpkg.StatusRunning {
-		t.Fatalf("expected running after Running-state event")
+		t.Fatalf("expected running after RUNNING event")
 	}
 	if strings.Contains(buf.String(), "ignored sandbox event") {
 		t.Fatalf("unexpected 'ignored' log for valid running transition")
@@ -184,7 +183,7 @@ func TestEventGuard_RunningWhileStarting(t *testing.T) {
 //
 // Skipped: see TestEventGuard_DieWhilePending.
 func TestEventGuard_DieWhileRunning(t *testing.T) {
-	t.Skip("no Firecracker equivalent to Docker's die event — see statusTransitionForState")
+	t.Skip("DEAD is acted on by the heartbeat inventory, not events — see statusTransitionForState")
 	ctx := context.Background()
 	pool := testutil.SetupPostgres(t, ctx)
 	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
@@ -194,7 +193,7 @@ func TestEventGuard_DieWhileRunning(t *testing.T) {
 	seedSandbox(t, ctx, sandboxRepo, "sbx-h5", sandboxpkg.StatusRunning)
 
 	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo)
-	ingestEvent(t, ctx, srv, "sbx-h5", "die")
+	ingestEvent(t, ctx, srv, "sbx-h5", orchestratorv1.SandboxState_SANDBOX_STATE_DEAD)
 
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h5") != sandboxpkg.StatusFailed {
 		t.Fatalf("expected failed after die event while running")
@@ -205,7 +204,7 @@ func TestEventGuard_DieWhileRunning(t *testing.T) {
 //
 // Skipped: see TestEventGuard_DieWhilePending.
 func TestEventGuard_DieWhileFailed(t *testing.T) {
-	t.Skip("no Firecracker equivalent to Docker's die event — see statusTransitionForState")
+	t.Skip("DEAD is acted on by the heartbeat inventory, not events — see statusTransitionForState")
 	ctx := context.Background()
 	pool := testutil.SetupPostgres(t, ctx)
 	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
@@ -219,7 +218,7 @@ func TestEventGuard_DieWhileFailed(t *testing.T) {
 	defer log.SetOutput(os.Stderr)
 
 	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo)
-	ingestEvent(t, ctx, srv, "sbx-h6", "die")
+	ingestEvent(t, ctx, srv, "sbx-h6", orchestratorv1.SandboxState_SANDBOX_STATE_DEAD)
 
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h6") != sandboxpkg.StatusFailed {
 		t.Fatalf("expected failed unchanged")
@@ -236,7 +235,7 @@ func TestEventGuard_DieWhileFailed(t *testing.T) {
 // TestEventGuard_DieWhilePending). The "start"/Running half alone is
 // already covered by TestEventGuard_RunningWhileStarting.
 func TestEventGuard_OutOfOrder_DieBeforeStart(t *testing.T) {
-	t.Skip("no Firecracker equivalent to Docker's die event — see statusTransitionForState")
+	t.Skip("DEAD is acted on by the heartbeat inventory, not events — see statusTransitionForState")
 	ctx := context.Background()
 	pool := testutil.SetupPostgres(t, ctx)
 	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
@@ -253,7 +252,7 @@ func TestEventGuard_OutOfOrder_DieBeforeStart(t *testing.T) {
 	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo)
 
 	// die arrives while pending → rejected
-	ingestEvent(t, ctx, srv, "sbx-h7", "die")
+	ingestEvent(t, ctx, srv, "sbx-h7", orchestratorv1.SandboxState_SANDBOX_STATE_DEAD)
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h7") != sandboxpkg.StatusPending {
 		t.Fatalf("expected pending after rejected die")
 	}
@@ -266,9 +265,9 @@ func TestEventGuard_OutOfOrder_DieBeforeStart(t *testing.T) {
 
 	// start arrives while starting → accepted
 	buf.Reset()
-	ingestEvent(t, ctx, srv, "sbx-h7", "Running")
+	ingestEvent(t, ctx, srv, "sbx-h7", orchestratorv1.SandboxState_SANDBOX_STATE_RUNNING)
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h7") != sandboxpkg.StatusRunning {
-		t.Fatalf("expected running after Running-state event in starting state")
+		t.Fatalf("expected running after RUNNING event in starting state")
 	}
 	if strings.Contains(buf.String(), "ignored sandbox event") {
 		t.Fatalf("running from starting should not be ignored")

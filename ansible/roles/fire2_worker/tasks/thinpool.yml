@@ -7,16 +7,15 @@
 #   /etc/fire2/thinpool.conf        settings shared by the scripts below
 #   fire2-thinpool-up + .service    (re)activates the pool at every boot
 #   fire2-thinpool-import-base      imports rootfs.ext4 as the base volume
-#   fire2-thin + sudoers rule       the one privileged operation the worker
-#                                   gets: create/remove a sandbox volume
-#   12-fire2-dm-permissions.rules   lets Firecracker (fire2) open them
+#
+# Sandbox volumes themselves are created and removed by the worker (root),
+# in Go: see internal/packages/thin.
 
 - name: Install device-mapper tooling
   ansible.builtin.apt:
     name:
       - dmsetup
       - thin-provisioning-tools
-      - sudo
     state: present
 
 - name: Create fire2 config directory
@@ -28,7 +27,7 @@
     mode: "0755"
 
 - name: Deploy thin pool settings
-  # Sourced by fire2-thin, which runs as root: must never be writable by fire2.
+  # Read by the worker and the pool scripts, all root: never writable by fire2.
   ansible.builtin.template:
     src: thinpool.conf.j2
     dest: /etc/fire2/thinpool.conf
@@ -46,7 +45,6 @@
   loop:
     - fire2-thinpool-up
     - fire2-thinpool-import-base
-    - fire2-thin
 
 - name: Deploy fire2-thinpool unit
   ansible.builtin.copy:
@@ -71,20 +69,19 @@
   changed_when: thinpool_import.stdout == "imported"
   when: firecracker_rootfs_url | length > 0
 
-- name: Allow the worker to run fire2-thin through sudo
-  ansible.builtin.template:
-    src: sudoers-fire2-thin.j2
-    dest: /etc/sudoers.d/fire2-thin
-    owner: root
-    group: root
-    mode: "0440"
-    validate: visudo -cf %s
+# The worker used to run as fire2 and call a fire2-thin script through sudo,
+# with a udev rule handing it the device nodes. It now runs as root and does
+# it in Go: remove what is left of that setup.
+- name: Remove the fire2-thin helper and its privileges
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /usr/local/sbin/fire2-thin
+    - /etc/sudoers.d/fire2-thin
 
-- name: Let Firecracker open sandbox volumes
-  ansible.builtin.template:
-    src: 12-fire2-dm-permissions.rules.j2
-    dest: /etc/udev/rules.d/12-fire2-dm-permissions.rules
-    owner: root
-    group: root
-    mode: "0644"
+- name: Remove the sandbox volume udev rule
+  ansible.builtin.file:
+    path: /etc/udev/rules.d/12-fire2-dm-permissions.rules
+    state: absent
   notify: reload udev rules

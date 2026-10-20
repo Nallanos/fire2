@@ -8,6 +8,31 @@ import (
 	"time"
 )
 
+// Inventory is a worker's complete heartbeat inventory, split by what each
+// reported state asks of the database. Every listed sandbox is in exactly one
+// field.
+type Inventory struct {
+	// Live are sandboxes the worker knows to be alive but not running yet, or
+	// paused: last_seen_at is refreshed.
+	Live []string
+	// Running are refreshed too, and advance starting→running.
+	Running []string
+	// Unknown are tracked by the worker but their VM could not be queried:
+	// not refreshed, so they age toward liveness expiry.
+	Unknown []string
+	// Dead are sandboxes whose VM process exited: claimed for cleanup.
+	Dead []string
+}
+
+// IDs returns every sandbox listed in the inventory.
+func (inv Inventory) IDs() []string {
+	ids := make([]string, 0, len(inv.Live)+len(inv.Running)+len(inv.Unknown)+len(inv.Dead))
+	ids = append(ids, inv.Live...)
+	ids = append(ids, inv.Running...)
+	ids = append(ids, inv.Unknown...)
+	return append(ids, inv.Dead...)
+}
+
 // ReconcileResult is what ReconcileInventory found beyond refreshing presence.
 type ReconcileResult struct {
 	// Orphans are listed sandboxes the database does not attribute to the worker.
@@ -15,6 +40,9 @@ type ReconcileResult struct {
 	// Lost are sandboxes of a previous incarnation, now claimed as cleanup_pending;
 	// the caller must enqueue their cleanup (target failed) in the same transaction.
 	Lost []string
+	// Dead are sandboxes reported dead, now claimed as cleanup_pending; the
+	// caller must enqueue their cleanup (target failed) in the same transaction.
+	Dead []string
 }
 
 func (r *PostgresRepository) UpdateStatusFenced(ctx context.Context, id, workerID string, token int64, status Status, allowedFrom ...Status) (int64, error) {
@@ -62,10 +90,13 @@ func (r *PostgresRepository) ClaimLivenessExpired(ctx context.Context, timeout t
 	return r.queryIDs(ctx, q, timeout.Seconds())
 }
 
-func (r *PostgresRepository) ReconcileInventory(ctx context.Context, workerID string, firstInventory bool, ids []string) (ReconcileResult, error) {
+func (r *PostgresRepository) ReconcileInventory(ctx context.Context, workerID string, firstInventory bool, inv Inventory) (ReconcileResult, error) {
 	var res ReconcileResult
+	ids := inv.IDs()
 
 	if firstInventory {
+		// Any listed sandbox is not lost, whatever its state: a dead one is
+		// handled below, an unknown one by liveness expiry.
 		const lost = `
 			UPDATE sandboxes s SET status = 'cleanup_pending'
 			FROM worker w
@@ -84,10 +115,32 @@ func (r *PostgresRepository) ReconcileInventory(ctx context.Context, workerID st
 		return res, nil
 	}
 
-	const seen = `UPDATE sandboxes SET last_seen_at = now()
-		WHERE worker_id = $1 AND id = ANY($2) AND status IN ('assigned', 'starting', 'running')`
-	if _, err := r.db.Exec(ctx, seen, workerID, ids); err != nil {
-		return ReconcileResult{}, err
+	if fresh := append(append([]string(nil), inv.Live...), inv.Running...); len(fresh) > 0 {
+		const seen = `UPDATE sandboxes SET last_seen_at = now()
+			WHERE worker_id = $1 AND id = ANY($2) AND status IN ('assigned', 'starting', 'running')`
+		if _, err := r.db.Exec(ctx, seen, workerID, fresh); err != nil {
+			return ReconcileResult{}, err
+		}
+	}
+
+	if len(inv.Running) > 0 {
+		// The create-sandbox job owns every transition before starting; the
+		// worker only confirms the VM came up.
+		const running = `UPDATE sandboxes SET status = 'running'
+			WHERE worker_id = $1 AND id = ANY($2) AND status = 'starting'`
+		if _, err := r.db.Exec(ctx, running, workerID, inv.Running); err != nil {
+			return ReconcileResult{}, err
+		}
+	}
+
+	if len(inv.Dead) > 0 {
+		const dead = `UPDATE sandboxes SET status = 'cleanup_pending'
+			WHERE worker_id = $1 AND id = ANY($2) AND status IN ('assigned', 'starting', 'running')
+			RETURNING id`
+		var err error
+		if res.Dead, err = r.queryIDs(ctx, dead, workerID, inv.Dead); err != nil {
+			return ReconcileResult{}, err
+		}
 	}
 
 	const orphans = `
