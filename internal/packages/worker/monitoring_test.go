@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +20,8 @@ type heartbeatClientStub struct {
 	registrations      int
 	registrationTokens []int64
 	heartbeatTokens    []int64
+	heartbeatSandboxes [][]string
+	heartbeatComplete  []bool
 }
 
 func (c *heartbeatClientStub) IngestSandboxEvent(context.Context, *orchestratorv1.SandboxEvent, ...grpc.CallOption) (*emptypb.Empty, error) {
@@ -42,6 +45,8 @@ func (c *heartbeatClientStub) ReportWorkerHeartbeat(_ context.Context, req *orch
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.heartbeatTokens = append(c.heartbeatTokens, req.GetFencingToken())
+	c.heartbeatSandboxes = append(c.heartbeatSandboxes, req.GetSandboxIds())
+	c.heartbeatComplete = append(c.heartbeatComplete, req.GetInventoryComplete())
 	return &emptypb.Empty{}, nil
 }
 
@@ -123,5 +128,42 @@ func TestUpdateWorkerRejectsInvalidRegistrationToken(t *testing.T) {
 	info, infoErr := w.GetWorkerInfo(context.Background())
 	if infoErr != nil || info.FencingToken != 0 {
 		t.Fatalf("worker token after failed registration: %d, err=%v", info.FencingToken, infoErr)
+	}
+}
+
+// The heartbeat inventory is the key set of the worker's in-memory sandbox
+// map: complete, with no probe of the VMs (the map holds no live clients here,
+// so any probe would fail or panic).
+func TestUpdateWorkerReportsTrackedSandboxIDs(t *testing.T) {
+	client := &heartbeatClientStub{registrationToken: 7}
+	w := NewWorkerService(client)
+	w.SetWorkerIdentity("worker-inv", "127.0.0.1")
+	w.SetWorkerBudget(2, 1024)
+
+	if _, err := w.UpdateWorker(context.Background()); err != nil {
+		t.Fatalf("UpdateWorker (empty): %v", err)
+	}
+
+	w.mu.Lock()
+	w.runningSandboxes["sbx-a"] = nil
+	w.runningSandboxes["sbx-b"] = nil
+	w.mu.Unlock()
+	if _, err := w.UpdateWorker(context.Background()); err != nil {
+		t.Fatalf("UpdateWorker: %v", err)
+	}
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.heartbeatSandboxes) != 2 {
+		t.Fatalf("expected 2 heartbeats, got %d", len(client.heartbeatSandboxes))
+	}
+	if !client.heartbeatComplete[0] || len(client.heartbeatSandboxes[0]) != 0 {
+		t.Fatalf("empty worker must send a complete, empty inventory: complete=%v ids=%v",
+			client.heartbeatComplete[0], client.heartbeatSandboxes[0])
+	}
+	got := append([]string(nil), client.heartbeatSandboxes[1]...)
+	sort.Strings(got)
+	if !client.heartbeatComplete[1] || strings.Join(got, ",") != "sbx-a,sbx-b" {
+		t.Fatalf("inventory must list tracked sandbox IDs: complete=%v ids=%v", client.heartbeatComplete[1], got)
 	}
 }

@@ -34,18 +34,17 @@ type Repository interface {
 	// ClaimLivenessExpired moves every active sandbox hosted by a worker that has
 	// not listed it for longer than timeout to cleanup_pending and returns their IDs.
 	ClaimLivenessExpired(ctx context.Context, timeout time.Duration) ([]string, error)
-	// ReconcileInventory matches a worker's complete inventory against the
-	// sandboxes assigned to it. Listed sandboxes get last_seen_at refreshed
-	// (and starting→running if reported Running); one whose state is
-	// InventoryStateUnknown is listed but not refreshed, so it still ages
-	// toward liveness expiry.
+	// ReconcileInventory matches the sandbox IDs a worker lists in a complete
+	// heartbeat inventory against the sandboxes assigned to it. Listed ones get
+	// last_seen_at refreshed. Presence is all an inventory says: it carries no VM
+	// state and never advances a status.
 	//
 	// On the first inventory of a new incarnation (firstInventory), every active
 	// sandbox that is not listed and was last seen before the worker registered
 	// belonged to the previous process, whose VMs died with it: they are moved
 	// to cleanup_pending and returned as lost. Sandboxes assigned since the
 	// registration are spared (their create call may not have reached the worker).
-	ReconcileInventory(ctx context.Context, workerID string, firstInventory bool, items []InventoryItem) (ReconcileResult, error)
+	ReconcileInventory(ctx context.Context, workerID string, firstInventory bool, ids []string) (ReconcileResult, error)
 	// AssignWorker sets worker_id and transitions status from scheduling→assigned atomically,
 	// only if the worker still has capacity (otherwise ErrWorkerFull).
 	AssignWorker(ctx context.Context, id string, workerID string) (Sandbox, error)
