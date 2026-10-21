@@ -17,6 +17,7 @@ package shim
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -38,6 +39,8 @@ const ProcessName = "fire2-shim"
 
 const exitedPrefix = "exited "
 
+const ExitFile = "shim.exit" // Firecracker's exit code, written before the shim tells its clients
+
 func exitedLine(code int) string {
 	return exitedPrefix + strconv.Itoa(code) + "\n"
 }
@@ -53,4 +56,24 @@ func parseExitedLine(line string) (int, error) {
 // Path returns the path of one of the shared files in dir.
 func Path(dir, file string) string {
 	return filepath.Join(dir, file)
+}
+
+// writeExit records Firecracker's exit code in dir, atomically: a reader sees
+// the whole file or none.
+func writeExit(dir string, code int) error {
+	tmp := Path(dir, ExitFile+".tmp")
+	if err := os.WriteFile(tmp, []byte(fmt.Sprintf("%d", code)), 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, Path(dir, ExitFile))
+}
+
+// readExit returns the exit code writeExit recorded. The error wraps
+// os.ErrNotExist when the shim wrote none.
+func readExit(dir string) (int, error) {
+	b, err := os.ReadFile(Path(dir, ExitFile))
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.TrimSpace(string(b)))
 }

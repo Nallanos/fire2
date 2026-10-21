@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"slices"
@@ -72,9 +73,13 @@ func fakeFirecracker(args []string) int {
 
 func spawn(t *testing.T, mode string) (*Handle, string) {
 	t.Helper()
+	return spawnIn(t, t.TempDir(), mode)
+}
+
+func spawnIn(t *testing.T, dir, mode string) (*Handle, string) {
+	t.Helper()
 	t.Setenv(helperEnv, "1")
 	t.Setenv(fakeModeEnv, mode)
-	dir := t.TempDir()
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -137,6 +142,43 @@ func TestShimReportsFirecrackerExit(t *testing.T) {
 	code, err := waitDone(t, h)
 	if err != nil || code != 3 {
 		t.Fatalf("Wait = %d, %v; want 3, nil", code, err)
+	}
+}
+
+// The shim records Firecracker's exit before telling its clients, so a worker
+// that connects too late still learns it.
+func TestShimWritesTheExitFile(t *testing.T) {
+	h, dir := spawn(t, "exit:3")
+	if _, err := waitDone(t, h); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := readExit(dir); err != nil || code != 3 {
+		t.Fatalf("readExit = %d, %v; want 3, nil", code, err)
+	}
+}
+
+// A shim that dies without recording anything must be an error, not the
+// leftover exit of a previous run.
+func TestSpawnIgnoresAStaleExitFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeExit(dir, 7); err != nil {
+		t.Fatal(err)
+	}
+	dyingShim, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("no true(1) to stand in for a shim that dies at once")
+	}
+	if h, err := Spawn(dyingShim, dir, "unused"); err == nil {
+		t.Fatalf("Spawn returned a handle (pid %d), want an error", h.Pid())
+	}
+}
+
+// Whether or not Spawn managed to connect before the VM exited, Close must
+// not panic.
+func TestCloseAfterAnImmediateExit(t *testing.T) {
+	h, _ := spawn(t, "exit:3")
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }
 

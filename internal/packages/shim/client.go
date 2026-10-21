@@ -42,6 +42,11 @@ func Spawn(shimPath, dir, firecrackerPath string) (*Handle, error) {
 	}
 	defer logFile.Close()
 
+	// An exit left by a previous run must not pass for this VM's.
+	if err := os.Remove(Path(dir, ExitFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("remove stale exit file: %w", err)
+	}
+
 	cmd := &exec.Cmd{
 		Path:   shimPath,
 		Args:   []string{ProcessName, "-dir", dir, "-firecracker", firecrackerPath},
@@ -69,7 +74,14 @@ func Spawn(shimPath, dir, firecrackerPath string) (*Handle, error) {
 		}
 		select {
 		case <-exited:
-			return nil, fmt.Errorf("shim exited before accepting connections (see %s)", Path(dir, ShimLogFile))
+			// Firecracker can exit before we ever connect: the shim recorded
+			// it in a file. No file means the shim itself died.
+			code, err := readExit(dir)
+			if err != nil {
+				return nil, fmt.Errorf("shim exited before accepting connections (see %s): %w", Path(dir, ShimLogFile), err)
+			}
+			// A handle that is already done, with no connection.
+			return &Handle{dir: dir, pid: cmd.Process.Pid, done: exited, code: code}, nil
 		default:
 		}
 		if time.Now().After(deadline) {
@@ -168,7 +180,12 @@ func (h *Handle) Stop(grace time.Duration) error {
 
 // Close drops the connection without touching the VM: the shim keeps it
 // running for the next worker to attach.
-func (h *Handle) Close() error { return h.conn.Close() }
+func (h *Handle) Close() error {
+	if h.conn == nil {
+		return nil // the VM was already gone when Spawn returned: never connected
+	}
+	return h.conn.Close()
+}
 
 // KillStale kills dir's shim if one is still running, which kills its VM
 // (Pdeathsig). For reaping a sandbox nobody can attach to.

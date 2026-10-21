@@ -73,6 +73,9 @@ func serve(log *slog.Logger, dir, firecracker string) error {
 	startErr := make(chan error, 1)
 	go runFirecracker(dir, firecracker, procCh, exitCh, startErr)
 	if err := <-startErr; err != nil {
+		if werr := writeExit(dir, -1); werr != nil {
+			log.Error("write exit file failed", "err", werr)
+		}
 		s.finish(exitedLine(-1))
 		ln.Close()
 		return err
@@ -97,7 +100,12 @@ wait:
 			_ = proc.Kill()
 		}
 	}
-
+	log.Info("firecracker exited", "code", code)
+	// Before telling the clients: a worker that connects too late reads the
+	// exit from this file (see Spawn).
+	if err := writeExit(dir, code); err != nil {
+		log.Error("write exit file failed", "err", err)
+	}
 	s.finish(exitedLine(code))
 	ln.Close()
 	return nil

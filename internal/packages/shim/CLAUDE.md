@@ -11,13 +11,14 @@ Keeps a Firecracker VM alive independently of the worker. One `fire2-shim` proce
 | `vm.json` | worker | Firecracker `--config-file`: boot-source, root drive, machine-config. The VM boots with no API calls |
 | `shim.pid` | shim (atomic rename) | shim PID, read by `Attach` / `KillStale` |
 | `shim.sock` | shim | control socket, listened on before Firecracker starts |
+| `shim.exit` | shim (atomic rename) | Firecracker's exit code (`-1` if it never started), written before clients are told. Lets a worker that connects after the exit still learn it; removed by `Spawn` |
 | `firecracker.sock` | Firecracker | API, used by the worker for `GET /` (state) |
 | `firecracker.log` | shim | Firecracker stdout/stderr, serial console included (truncated at each start) |
 | `shim.log` | worker | the shim's own stdout/stderr |
 
 ## Protocol
 
-A client connects to `shim.sock`; the shim writes exactly one line, `exited <code>\n`, when Firecracker exits (code 128+N if killed by signal N), then closes. **EOF without that line = the shim died**, and the VM with it (`Pdeathsig`). To stop the VM: `SIGTERM` to the shim, which forwards it to Firecracker and sends `SIGKILL` after 3s. Keep this backward compatible: old shims keep running across worker upgrades.
+A client connects to `shim.sock`; the shim writes exactly one line, `exited <code>\n`, when Firecracker exits (code 128+N if killed by signal N), then closes. **EOF without that line = the shim died**, and the VM with it (`Pdeathsig`). The same code is also recorded in `shim.exit` first: if Firecracker exits before `Spawn` ever connects (a bad config does so in ~3ms), `Spawn` returns an already-done `Handle` carrying that code instead of an error. No `shim.exit` and no socket = the shim itself died. To stop the VM: `SIGTERM` to the shim, which forwards it to Firecracker and sends `SIGKILL` after 3s. Keep this backward compatible: old shims keep running across worker upgrades.
 
 ## Invariants
 
