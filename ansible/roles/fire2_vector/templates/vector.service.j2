@@ -4,6 +4,12 @@ Documentation=https://vector.dev/docs/
 After=network-online.target
 Wants=network-online.target
 
+# Give up after 5 failures in 60s instead of crash-looping forever on a
+# config error that will never self-heal (see the worker crash-loop
+# incident — systemd ground on a stale bind address for ~19h unnoticed).
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
 [Service]
 # Runs as root, like the worker and its shims: the sandbox base dir is
 # root-only (0700) and holds each VM's config and sockets, so reading
@@ -15,12 +21,6 @@ ExecStart={{ vector_bin }} --config {{ vector_config_dir }}/vector.yaml
 Restart=on-failure
 RestartSec=5s
 
-# Give up after 5 failures in 60s instead of crash-looping forever on a
-# config error that will never self-heal (see the worker crash-loop
-# incident — systemd ground on a stale bind address for ~19h unnoticed).
-StartLimitIntervalSec=60s
-StartLimitBurst=5
-
 # Hardening: reads logs, writes only its checkpoints and disk buffer.
 StateDirectory=vector
 NoNewPrivileges=true
@@ -29,6 +29,18 @@ ProtectHome=true
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectControlGroups=true
+
+# Root only so it can read the root-only sandbox dirs and the journal: strip
+# everything else a compromised Vector could do with it. The one capability
+# kept is "read any file"; no raw disk or device access, no kernel modules,
+# no exotic sockets or syscalls. Check with `systemd-analyze security vector`.
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+PrivateDevices=true
+ProtectKernelModules=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+LockPersonality=true
+RestrictSUIDSGID=true
 
 TimeoutStopSec=30s
 

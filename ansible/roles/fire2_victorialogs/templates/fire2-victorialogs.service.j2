@@ -4,6 +4,12 @@ Documentation=https://docs.victoriametrics.com/victorialogs/
 After=network-online.target tailscaled.service
 Wants=network-online.target
 
+# Give up after 5 failures in 60s instead of crash-looping forever on a
+# config error that will never self-heal (see the worker crash-loop
+# incident — systemd ground on a stale bind address for ~19h unnoticed).
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
 [Service]
 User={{ victorialogs_user }}
 Group={{ victorialogs_group }}
@@ -24,12 +30,6 @@ ExecStart={{ victorialogs_bin }} \
   -httpListenAddr=${VL_LISTEN_ADDR}
 Restart=on-failure
 RestartSec=5s
-
-# Give up after 5 failures in 60s instead of crash-looping forever on a
-# config error that will never self-heal (see the worker crash-loop
-# incident — systemd ground on a stale bind address for ~19h unnoticed).
-StartLimitIntervalSec=60s
-StartLimitBurst=5
 
 # Hardening: it only ever needs its own data dir and the network.
 NoNewPrivileges=true

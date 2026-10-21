@@ -31,4 +31,5 @@ firecracker_rootfs_sha256: "{{ lookup('env', 'FIRECRACKER_ROOTFS_SHA256') }}"
 vector_journald_units:
   - fire2-worker.service
   - fire2-thinpool.service
+  - vector.service
 vector_sandbox_dir: "{{ firecracker_sandbox_dir }}"
