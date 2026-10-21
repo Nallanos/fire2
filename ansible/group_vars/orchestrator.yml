@@ -10,6 +10,7 @@ orchestrator_database_url: "{{ lookup('env', 'PROD_DATABASE_URL') }}"
 vector_journald_units:
   - fire2-api.service
   - fire2-victorialogs.service
+  - vector.service
 vector_sandbox_dir: ""
 # VictoriaLogs is on this host: a memory buffer is enough and spares the
 # short disk the 256 MiB minimum of a disk buffer.
