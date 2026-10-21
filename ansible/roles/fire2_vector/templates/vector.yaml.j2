@@ -76,6 +76,10 @@ sinks:
     healthcheck:
       enabled: false
     buffer:
-      type: disk
+      type: {{ vector_buffer_type }}
+{% if vector_buffer_type == 'disk' %}
       max_size: {{ vector_buffer_max_bytes }}
+{% else %}
+      max_events: {{ vector_buffer_max_events }}
+{% endif %}
       when_full: block
