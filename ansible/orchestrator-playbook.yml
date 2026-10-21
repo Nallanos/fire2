@@ -6,3 +6,5 @@
     ansible_python_interpreter: /usr/bin/python3
   roles:
     - fire2_orchestrator
+    - fire2_victorialogs
+    - fire2_vector

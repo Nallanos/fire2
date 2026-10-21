@@ -1,0 +1,40 @@
+---
+- name: Create Vector config directory
+  ansible.builtin.file:
+    path: "{{ vector_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Validate before it lands: a broken config must not replace a working one
+# (and then crash-loop the agent). --no-environment skips the checks that
+# need the network/filesystem (sink health, source paths).
+- name: Deploy Vector config
+  ansible.builtin.template:
+    src: vector.yaml.j2
+    dest: "{{ vector_config_dir }}/vector.yaml"
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "{{ vector_bin }} validate --no-environment --config-yaml %s"
+  notify: restart vector
+
+- name: Deploy systemd unit
+  ansible.builtin.template:
+    src: vector.service.j2
+    dest: /etc/systemd/system/vector.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd
+
+# Reload before starting: the unit file may be brand new.
+- name: Flush handlers before starting Vector
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure vector is started and enabled
+  ansible.builtin.systemd:
+    name: vector
+    state: started
+    enabled: true
