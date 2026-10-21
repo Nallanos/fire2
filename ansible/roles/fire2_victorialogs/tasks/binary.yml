@@ -1,0 +1,40 @@
+---
+# Installs the single-node VictoriaLogs binary, pinned to victorialogs_version
+# with the official sha256 of the release tarball (see defaults/main.yml).
+# Installed root-owned: root-owned path, unprivileged service user.
+- name: Validate host architecture for the pinned VictoriaLogs build
+  ansible.builtin.assert:
+    that:
+      - ansible_architecture == "x86_64"
+    fail_msg: "victorialogs_checksum_x86_64 pins the linux-amd64 build; got {{ ansible_architecture }}"
+
+- name: Download VictoriaLogs release tarball
+  ansible.builtin.get_url:
+    url: "https://github.com/VictoriaMetrics/VictoriaLogs/releases/download/v{{ victorialogs_version }}/victoria-logs-linux-amd64-v{{ victorialogs_version }}.tar.gz"
+    dest: "/tmp/victoria-logs-linux-amd64-v{{ victorialogs_version }}.tar.gz"
+    checksum: "{{ victorialogs_checksum_x86_64 }}"
+    mode: "0644"
+
+- name: Create VictoriaLogs extraction directory
+  ansible.builtin.file:
+    path: "/tmp/victoria-logs-v{{ victorialogs_version }}"
+    state: directory
+    mode: "0755"
+
+# The tarball holds a single file, victoria-logs-prod.
+- name: Extract VictoriaLogs release tarball
+  ansible.builtin.unarchive:
+    src: "/tmp/victoria-logs-linux-amd64-v{{ victorialogs_version }}.tar.gz"
+    dest: "/tmp/victoria-logs-v{{ victorialogs_version }}"
+    remote_src: true
+    creates: "/tmp/victoria-logs-v{{ victorialogs_version }}/victoria-logs-prod"
+
+- name: Install VictoriaLogs binary
+  ansible.builtin.copy:
+    src: "/tmp/victoria-logs-v{{ victorialogs_version }}/victoria-logs-prod"
+    dest: "{{ victorialogs_bin }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+  notify: restart victorialogs

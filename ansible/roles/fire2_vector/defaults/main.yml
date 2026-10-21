@@ -1,0 +1,24 @@
+---
+# Pinned to a specific published release + the sha256 of its x86_64 gnu
+# tarball (matches the official vector-<version>-SHA256SUMS release asset).
+# Bump both together.
+vector_version: "0.60.0"
+vector_checksum_x86_64: "sha256:89a9f134dcc35a6fbba9cb8ad0fec2d4802657bba6cb1c374a30660ef9456bdc"
+vector_bin: /usr/local/bin/vector
+
+vector_config_dir: /etc/vector
+vector_data_dir: /var/lib/vector
+
+# Required per host group — see group_vars/workers.yml and orchestrator.yml.
+# Systemd units whose journald output (including systemd's own start/stop/
+# crash/start-limit messages about them) is shipped.
+vector_journald_units: []
+# Per-sandbox directories; only <dir>/<sandbox id>/shim.log is shipped, never
+# firecracker.log (the guest serial console: may contain end-user content).
+# Empty = no file source (the orchestrator has no sandboxes).
+vector_sandbox_dir: ""
+
+# On-disk buffer in front of the VictoriaLogs sink, so logs queue up (instead
+# of being dropped or blocking the sources) while VictoriaLogs is down or
+# the tailnet is unreachable. Vector's minimum is 268435488 bytes.
+vector_buffer_max_bytes: 1073741824

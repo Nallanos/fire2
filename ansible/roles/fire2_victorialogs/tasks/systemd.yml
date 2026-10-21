@@ -1,0 +1,29 @@
+---
+# The unit binds VictoriaLogs to this host's Tailscale IP, found at start
+# (see the template). Fail here, with a clear message, if the host is not on
+# the tailnet yet rather than leaving a unit that cannot start.
+- name: Check the host has a Tailscale IPv4 address
+  ansible.builtin.command: tailscale ip -4
+  register: tailscale_ip
+  changed_when: false
+  check_mode: false
+  failed_when: tailscale_ip.rc != 0 or tailscale_ip.stdout | length == 0
+
+- name: Deploy systemd unit
+  ansible.builtin.template:
+    src: fire2-victorialogs.service.j2
+    dest: /etc/systemd/system/fire2-victorialogs.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd
+
+# Reload before starting: the unit file may be brand new.
+- name: Flush handlers before starting VictoriaLogs
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure fire2-victorialogs is started and enabled
+  ansible.builtin.systemd:
+    name: fire2-victorialogs
+    state: started
+    enabled: true

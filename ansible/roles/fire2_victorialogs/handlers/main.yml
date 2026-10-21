@@ -1,0 +1,10 @@
+---
+- name: reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+  notify: restart victorialogs
+
+- name: restart victorialogs
+  ansible.builtin.systemd:
+    name: fire2-victorialogs
+    state: restarted

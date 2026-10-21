@@ -1,0 +1,20 @@
+---
+# Pinned to a specific published release + the sha256 of its linux-amd64
+# tarball (matches the official victoria-logs-linux-amd64-v<version>_checksums.txt
+# release asset). Bump both together.
+victorialogs_version: "1.53.0"
+victorialogs_checksum_x86_64: "sha256:55feba89713cafa952673f91b8b38e7701bb0290989263da671b47a0de16edd3"
+victorialogs_bin: /usr/local/bin/victoria-logs
+
+victorialogs_user: victorialogs
+victorialogs_group: victorialogs
+victorialogs_data_dir: /var/lib/victorialogs
+
+# victorialogs_port is shared with the Vector agents: see group_vars/all.yml.
+
+# Entries older than this are deleted (and rejected at ingestion).
+victorialogs_retention_period: 30d
+# Hard cap on the data dir: once reached, the oldest per-day partitions are
+# dropped even if still within the retention period. Size the host's disk
+# for this plus headroom. Suffixes: KiB, MiB, GiB, TiB.
+victorialogs_retention_max_disk_space: 20GiB
