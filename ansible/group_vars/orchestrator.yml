@@ -11,3 +11,6 @@ vector_journald_units:
   - fire2-api.service
   - fire2-victorialogs.service
 vector_sandbox_dir: ""
+# VictoriaLogs is on this host: a memory buffer is enough and spares the
+# short disk the 256 MiB minimum of a disk buffer.
+vector_buffer_type: memory

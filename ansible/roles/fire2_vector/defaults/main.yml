@@ -18,7 +18,13 @@ vector_journald_units: []
 # Empty = no file source (the orchestrator has no sandboxes).
 vector_sandbox_dir: ""
 
-# On-disk buffer in front of the VictoriaLogs sink, so logs queue up (instead
-# of being dropped or blocking the sources) while VictoriaLogs is down or
-# the tailnet is unreachable. Vector's minimum is 268435488 bytes.
-vector_buffer_max_bytes: 1073741824
+# Buffer in front of the VictoriaLogs sink, so logs queue up (instead of being
+# dropped or blocking the sources) while VictoriaLogs is down or the tailnet
+# is unreachable. "disk" survives a Vector restart; "memory" holds
+# vector_buffer_max_events events and is lost on restart, which is fine where
+# VictoriaLogs runs on the same host (the orchestrator, short disk).
+vector_buffer_type: disk
+# Disk buffer cap. Vector's minimum is 268435488 bytes.
+vector_buffer_max_bytes: 268435488
+# Memory buffer cap.
+vector_buffer_max_events: 10000

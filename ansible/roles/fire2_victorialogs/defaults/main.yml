@@ -16,5 +16,6 @@ victorialogs_data_dir: /var/lib/victorialogs
 victorialogs_retention_period: 30d
 # Hard cap on the data dir: once reached, the oldest per-day partitions are
 # dropped even if still within the retention period. Size the host's disk
-# for this plus headroom. Suffixes: KiB, MiB, GiB, TiB.
-victorialogs_retention_max_disk_space: 20GiB
+# for this plus headroom (maindev has ~10 GiB free on / and is shared with
+# other services; fire2 logs are a few MiB a day). Suffixes: KiB, MiB, GiB, TiB.
+victorialogs_retention_max_disk_space: 500MiB

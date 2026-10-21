@@ -1,0 +1,15 @@
+---
+# maindev has a small shared root disk and its journal had grown to ~3 GiB.
+# The fire2 logs are shipped to VictoriaLogs (roles/fire2_vector), so the local
+# journal only needs to be a short buffer. Applies to the whole host.
+- name: Cap the systemd journal size
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/fire2.conf
+    content: |
+      # Managed by Ansible (fire2_orchestrator role).
+      [Journal]
+      SystemMaxUse={{ journald_max_use }}
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart systemd-journald

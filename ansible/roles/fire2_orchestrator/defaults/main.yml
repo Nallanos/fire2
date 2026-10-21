@@ -23,3 +23,7 @@ orchestrator_grpc_bind_host: ""
 
 heartbeat_timeout: 15s
 reaper_interval: 10s
+
+# Cap on the host's systemd journal (tasks/journald.yml). The fire2 logs are
+# shipped to VictoriaLogs, so the local copy is only a short buffer.
+journald_max_use: 500M
