@@ -15,8 +15,12 @@ ExecStart={{ fire2_install_dir }}/worker
 Restart=on-failure
 RestartSec=5s
 
-# Ensure the process group is killed on stop/restart — no orphan goroutines.
-KillMode=mixed
+# Only the worker is killed on stop/restart. Each VM runs under its own
+# fire2-shim, left running on purpose: the next worker re-attaches to it, so
+# a restart or redeploy does not destroy sandboxes. To stop every VM, use
+# `{{ fire2_install_dir }}/worker -reap-all` with the service stopped, or
+# reboot.
+KillMode=process
 TimeoutStopSec=10s
 
 [Install]

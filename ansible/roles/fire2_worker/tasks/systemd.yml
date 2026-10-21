@@ -47,9 +47,10 @@
   ansible.builtin.template:
     src: worker.env.j2
     dest: "{{ fire2_install_dir }}/worker.env"
-    owner: "{{ fire2_user }}"
-    group: "{{ fire2_group }}"
-    mode: "0640"
+    # Read by a root process: it names the binaries the worker runs as root.
+    owner: root
+    group: root
+    mode: "0600"
   notify: restart fire2-worker
 
 # Reload before starting: the unit file may be brand new.

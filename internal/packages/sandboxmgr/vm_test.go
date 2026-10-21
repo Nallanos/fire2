@@ -3,63 +3,57 @@ package sandboxmgr
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// fakeStart blocks until stop is called, like a Machine.Start stuck waiting
-// for a Firecracker process that only exits when killed.
-type fakeStart struct {
-	killed chan struct{}
-}
-
-func newFakeStart() *fakeStart { return &fakeStart{killed: make(chan struct{})} }
-
-func (f *fakeStart) start() error {
-	<-f.killed
-	return errors.New("firecracker exited")
-}
-
-func (f *fakeStart) stop() error {
-	close(f.killed)
-	return nil
-}
-
-func TestStartBoundedReturnsStartResult(t *testing.T) {
-	want := errors.New("bad config")
-	stopped := false
-	err := startBounded(context.Background(), func() error { return want }, func() error { stopped = true; return nil }, time.Second)
-	if !errors.Is(err, want) || stopped {
-		t.Fatalf("err = %v, stopped = %v: want start's own error and no stop", err, stopped)
+func TestWaitRunningReturnsOnceRunning(t *testing.T) {
+	var calls atomic.Int32
+	state := func(context.Context) (State, error) {
+		switch calls.Add(1) {
+		case 1:
+			return 0, errors.New("api socket not there yet")
+		case 2:
+			return StateStarting, nil
+		default:
+			return StateRunning, nil
+		}
 	}
-	if err := startBounded(context.Background(), func() error { return nil }, func() error { return nil }, time.Second); err != nil {
-		t.Fatalf("successful start: %v", err)
+	if err := waitRunning(context.Background(), state, nil, time.Second, time.Millisecond); err != nil {
+		t.Fatalf("waitRunning: %v", err)
+	}
+	if n := calls.Load(); n != 3 {
+		t.Fatalf("polled %d times, want 3", n)
 	}
 }
 
-func TestStartBoundedKillsAStuckStart(t *testing.T) {
-	f := newFakeStart()
+func TestWaitRunningTimesOut(t *testing.T) {
+	state := func(context.Context) (State, error) { return StateStarting, nil }
 	began := time.Now()
-	err := startBounded(context.Background(), f.start, f.stop, 20*time.Millisecond)
+	err := waitRunning(context.Background(), state, nil, 20*time.Millisecond, time.Millisecond)
 	if err == nil {
-		t.Fatal("a stuck start must fail")
-	}
-	select {
-	case <-f.killed:
-	default:
-		t.Fatal("the VM was not stopped")
+		t.Fatal("a VM that never runs must fail")
 	}
 	if elapsed := time.Since(began); elapsed > time.Second {
 		t.Fatalf("returned after %s, want about the timeout", elapsed)
 	}
 }
 
-func TestStartBoundedAbortsOnShutdown(t *testing.T) {
-	f := newFakeStart()
+func TestWaitRunningFailsWhenTheVMIsGone(t *testing.T) {
+	gone := make(chan struct{})
+	close(gone)
+	state := func(context.Context) (State, error) { return 0, errors.New("connection refused") }
+	if err := waitRunning(context.Background(), state, gone, time.Hour, time.Millisecond); err == nil {
+		t.Fatal("a VM gone while booting must fail")
+	}
+}
+
+func TestWaitRunningAbortsOnShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := startBounded(ctx, f.start, f.stop, time.Hour)
-	if !errors.Is(err, context.Canceled) {
+	state := func(context.Context) (State, error) { return StateStarting, nil }
+	if err := waitRunning(ctx, state, nil, time.Hour, time.Millisecond); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 }

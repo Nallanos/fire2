@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github/nallanos/fire2/internal/packages/shim"
 )
 
 // IsSandboxID reports whether name is shaped like a sandbox ID (the
@@ -42,8 +44,8 @@ func ListSandboxDirs(baseDir string) ([]string, error) {
 }
 
 // ReapSandbox tears down whatever a sandbox left on this host: it kills the
-// Firecracker process still holding the sandbox's socket, removes its thin
-// volume, then its directory. Every step tolerates the resource being already
+// sandbox's shim and the Firecracker process still holding its socket,
+// removes its thin volume, then its directory. Every step tolerates the resource being already
 // gone, so it is safe on a partially created or partially removed sandbox.
 //
 // The directory is the ownership marker: it is created before the volume and
@@ -62,8 +64,14 @@ func ReapSandbox(baseDir, sandboxID string, removeVolume func(sandboxID string) 
 		return fmt.Errorf("refusing to reap %q: not a sandbox id", sandboxID)
 	}
 	dir := filepath.Join(baseDir, sandboxID)
-	socketPath := filepath.Join(dir, "firecracker.sock")
+	socketPath := shim.Path(dir, shim.APISocket)
 
+	// A shim nobody can attach to: killing it kills its VM (Pdeathsig).
+	if err := shim.KillStale(dir); err != nil {
+		return err
+	}
+	// A Firecracker still holding the socket: its shim just died and the
+	// kernel has not delivered Pdeathsig yet, or it predates shims.
 	if pid, found := findProcessHoldingSocket(socketPath); found {
 		if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
 			return fmt.Errorf("kill orphaned firecracker pid=%d for %s: %w", pid, sandboxID, err)
@@ -80,20 +88,13 @@ func ReapSandbox(baseDir, sandboxID string, removeVolume func(sandboxID string) 
 	return nil
 }
 
-// ReapOrphans reaps every sandbox left in baseDir by a previous worker process
-// (crash or restart).
+// ReapOrphans reaps every sandbox in baseDir, live shims and VMs included. It
+// backs `worker -reap-all`: stop everything for maintenance. A worker starting
+// up does not call it: it re-attaches to live shims instead (see
+// sandboxmgr.Manager.Recover) and reaps only what it cannot attach to.
 //
-// The worker keeps no persisted state of its own — the sandbox manager's map
-// is wiped on restart by design. Re-creating a sandbox is the orchestrator's
-// job; this function's only responsibility is guaranteeing a clean slate for
-// that retry to land on, not resuming management of a VM this process didn't
-// start.
-//
-// Call this once at worker startup, before serving gRPC: at that point the
-// process owns no sandbox, so everything in its base dir is an orphan. The
-// caller must hold the base dir lock (sandboxmgr.LockBaseDir), so no other
-// worker owns any of it. Afterwards, the sandbox manager's reconciliation does
-// the same job for IDs it does not track.
+// The caller must hold the base dir lock (sandboxmgr.LockBaseDir), so no
+// worker owns any of it.
 func ReapOrphans(baseDir string, removeVolume func(sandboxID string) error) error {
 	ids, err := ListSandboxDirs(baseDir)
 	if err != nil {

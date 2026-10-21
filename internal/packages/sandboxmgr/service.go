@@ -161,15 +161,30 @@ func (s *Service) create(ctx context.Context, in CreateInput) error {
 		return err
 	}
 
+	s.watch(ctx, v)
+
+	// Report RUNNING now rather than one poll interval later.
+	s.poll(ctx)
+	return nil
+}
+
+// adopt hands the Service a VM a previous worker process left running (its
+// shim survived), in the state it was found in. Call it before run: there is
+// nothing to create.
+func (s *Service) adopt(ctx context.Context, v vm, st State) {
+	s.vm = v
+	s.state = st
+	s.watch(ctx, v)
+}
+
+// watch turns the VM's exit into a value on s.exited, which run turns into
+// DEAD.
+func (s *Service) watch(ctx context.Context, v vm) {
 	// The goroutine captures the channel, not the field: run sets s.exited
 	// to nil once it fires, and reading the field here would race with that.
 	exited := make(chan error, 1)
 	s.exited = exited
 	go func() { exited <- v.Wait(ctx) }()
-
-	// Report RUNNING now rather than one poll interval later.
-	s.poll(ctx)
-	return nil
 }
 
 // remove stops the VM and releases its resources. A stop failure doesn't

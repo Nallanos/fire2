@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"os"
 	"strconv"
@@ -14,6 +15,11 @@ import (
 )
 
 func main() {
+	reapAll := flag.Bool("reap-all", false,
+		"stop every sandbox on this host (VMs, shims, volumes, directories) and exit; "+
+			"for maintenance, with the worker service stopped")
+	flag.Parse()
+
 	// WORKER_PORT unset or "0" binds an OS-assigned ephemeral port; the worker
 	// discovers the real port from the listener and reports it via heartbeat.
 	// A non-zero value pins a specific port.
@@ -75,13 +81,25 @@ func main() {
 	}
 	defer baseDirLock.Close()
 
-	// Firecracker keeps no state of its own across restarts — kill any VM
-	// left running by a previous crash/redeploy of this worker and clean up
-	// its volume and directory. The orchestrator's retry policy re-creates
-	// the sandbox; this just guarantees a clean slate for that retry.
-	if err := runtimeClient.ReapOrphans(sandboxCfg.BaseDir, sandboxCfg.RemoveVolume); err != nil {
-		log.Printf("reap orphaned sandboxes: %v", err)
+	if *reapAll {
+		if err := runtimeClient.ReapOrphans(sandboxCfg.BaseDir, sandboxCfg.RemoveVolume); err != nil {
+			log.Fatalf("reap all sandboxes: %v", err)
+		}
+		log.Printf("every sandbox reaped")
+		return
 	}
+
+	// VMs outlive the worker: each runs under its own fire2-shim. Take back
+	// the ones a previous crash/restart left running, and reap what cannot
+	// be taken back. Done before the first heartbeat, so the orchestrator
+	// sees the recovered sandboxes in this incarnation's first inventory
+	// instead of failing them as lost.
+	sandboxes := sandboxmgr.New(ctx, sandboxCfg)
+	recovered, err := sandboxes.Recover()
+	if err != nil {
+		log.Printf("recover sandboxes: %v", err)
+	}
+	log.Printf("recovered %d sandbox(es)", recovered)
 
 	eventClient, err := orchestrator.NewEventClient(ctx, orchestratorAddr)
 	if err != nil {
@@ -89,7 +107,6 @@ func main() {
 	}
 	defer eventClient.Close()
 
-	sandboxes := sandboxmgr.New(ctx, sandboxCfg)
 	go sandboxes.Run(ctx, 0)
 
 	workerService := workerpkg.NewWorkerService(eventClient.Client(), sandboxes)

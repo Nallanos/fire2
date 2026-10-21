@@ -64,7 +64,8 @@ ansible-install:
 ansible-build:
 	@mkdir -p dist
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o dist/worker ./cmd/worker
-	@echo "built: dist/worker"
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o dist/fire2-shim ./cmd/fire2-shim
+	@echo "built: dist/worker dist/fire2-shim"
 
 .PHONY: ansible-deploy
 ansible-deploy:

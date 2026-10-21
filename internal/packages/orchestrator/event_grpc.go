@@ -198,10 +198,11 @@ func (s *EventGRPCServer) reconcileHeartbeat(ctx context.Context, w workerpkg.Wo
 		return err
 	}
 
-	// A new token proves the previous process is dead and so are its VMs
-	// (ReapOrphans kills them at startup): fail them now instead of waiting
-	// for the liveness delay. A VM the worker reports dead (its process
-	// exited) is failed the same way.
+	// A new token proves the previous process is dead. Its VMs live on under
+	// their shims, and the new process lists every one it took back in this
+	// first inventory: an unlisted sandbox's VM is gone, so fail it now
+	// instead of waiting for the liveness delay. A VM the worker reports dead
+	// (its process exited) is failed the same way.
 	params := make([]river.InsertManyParams, 0, len(res.Lost)+len(res.Dead)+len(res.Orphans))
 	for _, id := range append(res.Lost, res.Dead...) {
 		params = append(params, cleanupParams(id, sandboxpkg.StatusFailed))

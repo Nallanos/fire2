@@ -31,6 +31,7 @@ type Manager struct {
 	events chan StateChange
 
 	newVM        vmFactory
+	attach       vmAttacher
 	reap         func(sandboxID string) error
 	listDisk     func() ([]string, error)
 	pollInterval time.Duration
@@ -43,23 +44,69 @@ type entry struct {
 }
 
 // New builds a Manager whose Services boot Firecracker VMs described by cfg
-// and live until ctx is done. Call Run to start the audit loop.
+// and live until ctx is done. Call Recover once, then Run to start the audit
+// loop.
 func New(ctx context.Context, cfg Config) *Manager {
-	return newManager(ctx, cfg.newFirecrackerVM, cfg.reap, cfg.listDisk)
+	return newManager(ctx, cfg.newFirecrackerVM, cfg.attach, cfg.reap, cfg.listDisk)
 }
 
-func newManager(ctx context.Context, newVM vmFactory, reap func(string) error, listDisk func() ([]string, error)) *Manager {
+func newManager(ctx context.Context, newVM vmFactory, attach vmAttacher, reap func(string) error, listDisk func() ([]string, error)) *Manager {
 	return &Manager{
 		ctx:          ctx,
 		services:     make(map[string]*entry),
 		deleting:     make(map[string]struct{}),
 		events:       make(chan StateChange, eventBuffer),
 		newVM:        newVM,
+		attach:       attach,
 		reap:         reap,
 		listDisk:     listDisk,
 		pollInterval: statePollInterval,
 		now:          time.Now,
 	}
+}
+
+// Recover takes over the sandboxes a previous worker process left on this
+// host: each one whose shim is still alive is adopted with its VM's current
+// state, everything else is reaped. Call it once at startup, after taking the
+// base dir lock and before serving requests or sending heartbeats, so the
+// first inventory of this incarnation lists the adopted sandboxes (and the
+// orchestrator does not fail them as lost). It returns how many it adopted.
+func (m *Manager) Recover() (int, error) {
+	ids, err := m.listDisk()
+	if err != nil {
+		return 0, fmt.Errorf("list sandboxes on disk: %w", err)
+	}
+	adopted := 0
+	for _, id := range ids {
+		v, err := m.attach(id)
+		if err != nil {
+			log.Printf("sandbox %s: not recoverable (%v), reaping", id, err)
+			if err := m.reap(id); err != nil {
+				log.Printf("sandbox %s: reap: %v", id, err)
+			}
+			continue
+		}
+		qctx, cancel := context.WithTimeout(m.ctx, stateQueryTimeout)
+		st, err := v.State(qctx)
+		cancel()
+		if err != nil {
+			st = StateUnknown
+		}
+		m.adopt(id, v, st)
+		log.Printf("sandbox %s: recovered, %s", id, st)
+		adopted++
+	}
+	return adopted, nil
+}
+
+func (m *Manager) adopt(id string, v vm, st State) {
+	var svc *Service
+	svc = newService(id, m.newVM, func(st State) { m.report(id, svc, st) }, m.pollInterval)
+	svc.adopt(m.ctx, v, st)
+	m.mu.Lock()
+	m.services[id] = &entry{svc: svc, state: st}
+	m.mu.Unlock()
+	go svc.run(m.ctx)
 }
 
 // SetCapacity updates how many sandboxes this worker may host. The worker
