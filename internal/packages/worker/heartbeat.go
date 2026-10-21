@@ -2,7 +2,7 @@ package worker
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 )
 
@@ -43,6 +43,6 @@ func (w *WorkerService) sendHeartbeat(ctx context.Context) {
 	hctx, cancel := context.WithTimeout(ctx, heartbeatRequestTimeout)
 	defer cancel()
 	if _, err := w.UpdateWorker(hctx); err != nil {
-		log.Printf("worker heartbeat update failed: %v", err)
+		slog.Error("worker heartbeat update failed", "err", err)
 	}
 }

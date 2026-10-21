@@ -3,7 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
@@ -115,19 +115,19 @@ func ServeGRPC(address string, srv workerv1.WorkerServiceServer, opts ...grpc.Se
 	// the actual bound port back from the listener — it is what the worker
 	// reports to the orchestrator and what the orchestrator dials.
 	boundPort := lis.Addr().(*net.TCPAddr).Port
-	log.Printf("worker gRPC listening on %s", lis.Addr().String())
+	slog.Info("worker gRPC listening", "address", lis.Addr().String())
 
 	grpcServer := grpc.NewServer(opts...)
 	workerv1.RegisterWorkerServiceServer(grpcServer, srv)
 
-	log.Printf("worker gRPC server started on %s", lis.Addr().String())
+	slog.Info("worker gRPC server started", "address", lis.Addr().String())
 	if workerSrv, ok := srv.(*WorkerGRPCServer); ok {
 		workerSrv.service.SetListenPort(boundPort)
 
 		heartbeatCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		log.Printf("starting heartbeat loop with interval: %s", heartbeatIntervalFromEnv())
+		slog.Info("starting heartbeat loop", "interval", heartbeatIntervalFromEnv().String())
 		go workerSrv.service.RunHeartbeat(heartbeatCtx, heartbeatIntervalFromEnv())
 		return grpcServer.Serve(lis)
 	}

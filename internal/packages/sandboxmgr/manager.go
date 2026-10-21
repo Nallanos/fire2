@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -80,9 +80,9 @@ func (m *Manager) Recover() (int, error) {
 	for _, id := range ids {
 		v, err := m.attach(id)
 		if err != nil {
-			log.Printf("sandbox %s: not recoverable (%v), reaping", id, err)
+			slog.Warn("sandbox not recoverable, reaping", "sandbox_id", id, "err", err)
 			if err := m.reap(id); err != nil {
-				log.Printf("sandbox %s: reap: %v", id, err)
+				slog.Error("reap of unrecoverable sandbox failed", "sandbox_id", id, "err", err)
 			}
 			continue
 		}
@@ -93,7 +93,7 @@ func (m *Manager) Recover() (int, error) {
 			st = StateUnknown
 		}
 		m.adopt(id, v, st)
-		log.Printf("sandbox %s: recovered, %s", id, st)
+		slog.Info("sandbox recovered", "sandbox_id", id, "state", st.String())
 		adopted++
 	}
 	return adopted, nil
@@ -139,7 +139,7 @@ func (m *Manager) Create(in CreateInput) error {
 	hosted := len(m.services) + len(m.deleting)
 	if m.capacity > 0 && hosted >= m.capacity {
 		m.mu.Unlock()
-		log.Printf("worker at capacity: hosted=%d capacity=%d", hosted, m.capacity)
+		slog.Warn("worker at capacity", "hosted", hosted, "capacity", m.capacity)
 		return ErrAtCapacity
 	}
 
@@ -244,6 +244,6 @@ func (m *Manager) emit(sandboxID string, st State) {
 	select {
 	case m.events <- StateChange{SandboxID: sandboxID, State: st, At: m.now().UTC()}:
 	default:
-		log.Printf("sandbox %s: event buffer full, dropping state %s", sandboxID, st)
+		slog.Warn("event buffer full, dropping state", "sandbox_id", sandboxID, "state", st.String())
 	}
 }

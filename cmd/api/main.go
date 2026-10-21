@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,21 +21,26 @@ import (
 )
 
 func main() {
+	app.SetupLogger("fire2-api")
+
 	cfg := app.ConfigFromEnv()
 	ctx := context.Background()
 
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("pgxpool.New: %v", err)
+		slog.Error("pgxpool.New failed", "err", err)
+		os.Exit(1)
 	}
 	defer pool.Close()
 
 	migrator, err := rivermigrate.New(riverpgxv5.New(pool), nil)
 	if err != nil {
-		log.Fatalf("rivermigrate.New: %v", err)
+		slog.Error("rivermigrate.New failed", "err", err)
+		os.Exit(1)
 	}
 	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
-		log.Fatalf("river migrate up: %v", err)
+		slog.Error("river migrate up failed", "err", err)
+		os.Exit(1)
 	}
 
 	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
@@ -74,11 +79,13 @@ func main() {
 		},
 	})
 	if err != nil {
-		log.Fatalf("river.NewClient: %v", err)
+		slog.Error("river.NewClient failed", "err", err)
+		os.Exit(1)
 	}
 
 	if err := riverClient.Start(ctx); err != nil {
-		log.Fatalf("riverClient.Start: %v", err)
+		slog.Error("riverClient.Start failed", "err", err)
+		os.Exit(1)
 	}
 	defer func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -96,14 +103,14 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("api listening on :%s", cfg.Port)
+		slog.Info("api listening", "port", cfg.Port)
 		errCh <- srv.ListenAndServe()
 	}()
 
 	grpcErrCh := make(chan error, 1)
 	go func() {
 		grpcAddr := cfg.OrchestratorGRPCBindHost + ":" + cfg.OrchestratorGRPCPort
-		log.Printf("orchestrator gRPC listening on %s", grpcAddr)
+		slog.Info("orchestrator gRPC listening", "address", grpcAddr)
 		grpcErrCh <- orchestrator.ServeEventGRPC(grpcAddr,
 			orchestrator.NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo,
 				orchestrator.WithTransactions(pool),
@@ -115,11 +122,11 @@ func main() {
 
 	select {
 	case sig := <-sigCh:
-		log.Printf("shutdown signal: %s", sig)
+		slog.Info("shutdown signal received", "signal", sig.String())
 	case err := <-errCh:
-		log.Printf("server error: %v", err)
+		slog.Error("server error", "err", err)
 	case err := <-grpcErrCh:
-		log.Printf("grpc server error: %v", err)
+		slog.Error("grpc server error", "err", err)
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

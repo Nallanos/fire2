@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -201,14 +201,14 @@ func (w *CreateSandboxWorker) stepStartSandbox(ctx context.Context, sbx sandboxp
 	}
 
 	// Measure the time it takes to start the sandbox.
-	log.Printf("create_sandbox: sandbox=%s started in %v", sbx.ID, time.Since(startTime))
+	slog.Info("create_sandbox: sandbox started", "sandbox_id", sbx.ID, "duration", time.Since(startTime).String())
 
 	_, n, err := w.sandboxRepo.UpdateStatus(ctx, sbx.ID, sandboxpkg.StatusStarting, sandboxpkg.StatusAssigned)
 	if err != nil {
 		return w.maybeCleanup(ctx, sbx.ID, isFinal, job, fmt.Errorf("set starting: %w", err))
 	}
 	if n == 0 {
-		log.Printf("create_sandbox: status guard rejected starting update for sandbox=%s; may have been advanced by event handler", sbx.ID)
+		slog.Info("create_sandbox: status guard rejected starting update, may have been advanced by event handler", "sandbox_id", sbx.ID)
 	}
 
 	return w.stepAcknowledge(ctx, sbx.ID, isFinal, job)
@@ -242,11 +242,11 @@ func (w *CreateSandboxWorker) maybeCleanup(ctx context.Context, sandboxID string
 		return origErr
 	}
 
-	log.Printf("create_sandbox: final attempt failed for sandbox=%s err=%v; enqueueing cleanup", sandboxID, origErr)
+	slog.Error("create_sandbox: final attempt failed, enqueueing cleanup", "sandbox_id", sandboxID, "err", origErr)
 
 	tx, txErr := w.pool.Begin(ctx)
 	if txErr != nil {
-		log.Printf("create_sandbox: could not begin cleanup tx for sandbox=%s: %v", sandboxID, txErr)
+		slog.Error("create_sandbox: could not begin cleanup tx", "sandbox_id", sandboxID, "err", txErr)
 		return origErr
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
@@ -254,19 +254,19 @@ func (w *CreateSandboxWorker) maybeCleanup(ctx context.Context, sandboxID string
 	_, _, updateErr := w.sandboxRepo.WithTx(tx).UpdateStatus(ctx, sandboxID, sandboxpkg.StatusCleanupPending,
 		sandboxpkg.StatusPending, sandboxpkg.StatusScheduling, sandboxpkg.StatusAssigned, sandboxpkg.StatusStarting, sandboxpkg.StatusRunning)
 	if updateErr != nil {
-		log.Printf("create_sandbox: could not set cleanup_pending for sandbox=%s: %v", sandboxID, updateErr)
+		slog.Error("create_sandbox: could not set cleanup_pending", "sandbox_id", sandboxID, "err", updateErr)
 		return origErr
 	}
 
 	riverClient := river.ClientFromContext[pgx.Tx](ctx)
 	_, insertErr := riverClient.InsertTx(ctx, tx, CleanupSandboxArgs{SandboxID: sandboxID}, &river.InsertOpts{Queue: "cleanup"})
 	if insertErr != nil {
-		log.Printf("create_sandbox: could not insert cleanup job for sandbox=%s: %v", sandboxID, insertErr)
+		slog.Error("create_sandbox: could not insert cleanup job", "sandbox_id", sandboxID, "err", insertErr)
 		return origErr
 	}
 
 	if commitErr := tx.Commit(ctx); commitErr != nil {
-		log.Printf("create_sandbox: cleanup tx commit failed for sandbox=%s: %v", sandboxID, commitErr)
+		slog.Error("create_sandbox: cleanup tx commit failed", "sandbox_id", sandboxID, "err", commitErr)
 		return origErr
 	}
 

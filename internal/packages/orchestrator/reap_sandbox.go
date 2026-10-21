@@ -3,7 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -79,7 +79,7 @@ func (w *ReapSandboxWorker) Work(ctx context.Context, job *river.Job[ReapSandbox
 		return fmt.Errorf("reap sandbox: commit: %w", err)
 	}
 
-	log.Printf("reap sandbox: claimed %d ttl-expired and %d liveness-expired sandbox(es)", len(expired), len(dead))
+	slog.Info("reap sandbox: claimed expired sandboxes", "ttl_expired", len(expired), "liveness_expired", len(dead))
 	return nil
 }
 
