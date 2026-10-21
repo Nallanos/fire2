@@ -6,6 +6,12 @@ After=network.target fire2-thinpool.service
 # (so it never heartbeats and never gets scheduled).
 Requires=fire2-thinpool.service
 
+# Give up after 5 failures in 60s instead of crash-looping forever on a
+# config error that will never self-heal (the ~19h worker crash-loop).
+# Sandboxes survive: their shims outlive the worker (KillMode=process below).
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
 [Service]
 # Runs as root: the worker drives device-mapper itself (thin volume per
 # sandbox) and spawns Firecracker, with no sudo or helper script on the

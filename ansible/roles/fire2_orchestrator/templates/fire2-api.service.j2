@@ -3,6 +3,13 @@ Description=fire2 orchestrator API
 Documentation=https://github.com/nallanos/fire2
 After=network.target
 
+# Give up after 5 failures in 60s instead of crash-looping forever on a
+# config error that will never self-heal (see the worker crash-loop
+# incident — systemd ground on a stale bind address for ~19h unnoticed).
+# These belong in [Unit]: systemd ignores them in [Service].
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
 [Service]
 User={{ fire2_user }}
 Group={{ fire2_group }}
@@ -10,12 +17,6 @@ EnvironmentFile={{ fire2_install_dir }}/api.env
 ExecStart={{ fire2_install_dir }}/api
 Restart=on-failure
 RestartSec=5s
-
-# Give up after 5 failures in 60s instead of crash-looping forever on a
-# config error that will never self-heal (see the worker crash-loop
-# incident — systemd ground on a stale bind address for ~19h unnoticed).
-StartLimitIntervalSec=60s
-StartLimitBurst=5
 
 # Ensure the process group is killed on stop/restart — no orphan goroutines.
 KillMode=mixed
