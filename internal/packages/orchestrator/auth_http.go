@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -64,7 +64,7 @@ func (h *AuthHandlers) signUp(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "email already registered", http.StatusConflict)
 			return
 		}
-		log.Printf("signup failed: %v", err)
+		slog.Error("signup failed", "err", err)
 		http.Error(w, "signup failed", http.StatusInternalServerError)
 		return
 	}
@@ -84,7 +84,7 @@ func (h *AuthHandlers) login(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid email or password", http.StatusUnauthorized)
 			return
 		}
-		log.Printf("login failed: %v", err)
+		slog.Error("login failed", "err", err)
 		http.Error(w, "login failed", http.StatusInternalServerError)
 		return
 	}
@@ -96,7 +96,7 @@ func (h *AuthHandlers) logout(w http.ResponseWriter, r *http.Request) {
 	token := bearerToken(r)
 	if token != "" {
 		if err := h.authSvc.Logout(r.Context(), token); err != nil {
-			log.Printf("logout failed: %v", err)
+			slog.Warn("logout failed", "err", err)
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)

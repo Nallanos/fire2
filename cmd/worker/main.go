@@ -3,10 +3,11 @@ package main
 import (
 	"context"
 	"flag"
-	"log"
+	"log/slog"
 	"os"
 	"strconv"
 
+	"github/nallanos/fire2/internal/app"
 	"github/nallanos/fire2/internal/packages/orchestrator"
 	runtimeClient "github/nallanos/fire2/internal/packages/runtime"
 	"github/nallanos/fire2/internal/packages/sandboxmgr"
@@ -15,6 +16,8 @@ import (
 )
 
 func main() {
+	app.SetupLogger("fire2-worker")
+
 	reapAll := flag.Bool("reap-all", false,
 		"stop every sandbox on this host (VMs, shims, volumes, directories) and exit; "+
 			"for maintenance, with the worker service stopped")
@@ -32,12 +35,13 @@ func main() {
 	if orchestratorAddr == "" {
 		orchestratorAddr = "127.0.0.1:7001"
 	}
-	log.Printf("orchestrator gRPC address: %s", orchestratorAddr)
+	slog.Info("orchestrator gRPC address", "address", orchestratorAddr)
 
 	workerID := os.Getenv("WORKER_ID")
 	if workerID == "" {
 		workerID, _ = os.Hostname()
 	}
+	slog.SetDefault(slog.With("worker_id", workerID))
 
 	// WORKER_ADVERTISED_HOST/WORKER_GRPC_BIND_HOST are normally left unset —
 	// a static IP baked into Ansible vars goes stale the moment a host is
@@ -48,9 +52,9 @@ func main() {
 	if advertisedHost == "" {
 		if ip, err := tailscalepkg.IPv4(); err == nil {
 			advertisedHost = ip
-			log.Printf("auto-discovered tailscale address: %s", ip)
+			slog.Info("auto-discovered tailscale address", "address", ip)
 		} else {
-			log.Printf("tailscale address auto-discovery failed, falling back: %v", err)
+			slog.Warn("tailscale address auto-discovery failed, falling back", "err", err)
 		}
 	}
 
@@ -77,15 +81,17 @@ func main() {
 	// as long as the file stays open, i.e. the whole process.
 	baseDirLock, err := sandboxmgr.LockBaseDir(sandboxCfg.BaseDir)
 	if err != nil {
-		log.Fatalf("worker startup: %v", err)
+		slog.Error("worker startup failed", "err", err)
+		os.Exit(1)
 	}
 	defer baseDirLock.Close()
 
 	if *reapAll {
 		if err := runtimeClient.ReapOrphans(sandboxCfg.BaseDir, sandboxCfg.RemoveVolume); err != nil {
-			log.Fatalf("reap all sandboxes: %v", err)
+			slog.Error("reap all sandboxes failed", "err", err)
+			os.Exit(1)
 		}
-		log.Printf("every sandbox reaped")
+		slog.Info("every sandbox reaped")
 		return
 	}
 
@@ -97,13 +103,14 @@ func main() {
 	sandboxes := sandboxmgr.New(ctx, sandboxCfg)
 	recovered, err := sandboxes.Recover()
 	if err != nil {
-		log.Printf("recover sandboxes: %v", err)
+		slog.Error("recover sandboxes failed", "err", err)
 	}
-	log.Printf("recovered %d sandbox(es)", recovered)
+	slog.Info("recovered sandboxes", "count", recovered)
 
 	eventClient, err := orchestrator.NewEventClient(ctx, orchestratorAddr)
 	if err != nil {
-		log.Fatalf("orchestrator event client init failed: %v", err)
+		slog.Error("orchestrator event client init failed", "err", err)
+		os.Exit(1)
 	}
 	defer eventClient.Close()
 
@@ -118,6 +125,7 @@ func main() {
 	go reporter.Run(ctx)
 
 	if err := workerpkg.ServeGRPC(grpcBindHost+":"+workerPort, workerGRPCServer); err != nil {
-		log.Fatal(err)
+		slog.Error("worker gRPC server failed", "err", err)
+		os.Exit(1)
 	}
 }

@@ -2,7 +2,7 @@ package worker
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 
 	orchestratorv1 "github/nallanos/fire2/gen/orchestrator/v1"
@@ -62,6 +62,6 @@ func (r *EventReporter) report(ctx context.Context, change sandboxmgr.StateChang
 		FencingToken: info.FencingToken,
 	})
 	if err != nil {
-		log.Printf("event reporter: sandbox %s: ingest %s: %v", change.SandboxID, change.State, err)
+		slog.Error("event reporter: ingest sandbox event failed", "sandbox_id", change.SandboxID, "state", change.State.String(), "err", err)
 	}
 }

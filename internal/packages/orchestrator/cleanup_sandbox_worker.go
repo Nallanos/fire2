@@ -3,7 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/riverqueue/river"
 
@@ -55,7 +55,7 @@ func (w *CleanupSandboxWorker) Work(ctx context.Context, job *river.Job[CleanupS
 			if !isFinalAttempt {
 				return fmt.Errorf("cleanup: sandbox=%s: %w", sandboxID, err)
 			}
-			log.Printf("cleanup: giving up on remote removal for sandbox=%s after %d attempts: %v", sandboxID, job.Attempt, err)
+			slog.Error("cleanup: giving up on remote removal", "sandbox_id", sandboxID, "attempts", job.Attempt, "err", err)
 			target = sandboxpkg.StatusFailed
 		}
 

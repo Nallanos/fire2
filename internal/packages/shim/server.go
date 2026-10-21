@@ -4,11 +4,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"syscall"
@@ -29,11 +30,14 @@ func Main(args []string) int {
 		return 2
 	}
 	if *dir == "" || *firecracker == "" {
-		log.Printf("%s: -dir and -firecracker are required", ProcessName)
+		slog.Error("-dir and -firecracker are required")
 		return 2
 	}
-	if err := serve(*dir, *firecracker); err != nil {
-		log.Printf("%s: %v", ProcessName, err)
+	// One shim serves one sandbox, and its directory is named after the
+	// sandbox ID.
+	log := slog.With("sandbox_id", filepath.Base(*dir))
+	if err := serve(log, *dir, *firecracker); err != nil {
+		log.Error("shim failed", "err", err)
 		return 1
 	}
 	return 0
@@ -41,7 +45,7 @@ func Main(args []string) int {
 
 // serve starts Firecracker and reports its exit to every client, then
 // returns.
-func serve(dir, firecracker string) error {
+func serve(log *slog.Logger, dir, firecracker string) error {
 	sockPath := Path(dir, SocketFile)
 	// Listen before starting the VM, so the worker can always connect.
 	_ = os.Remove(sockPath)
@@ -83,13 +87,13 @@ wait:
 		case code = <-exitCh:
 			break wait
 		case sig := <-signals:
-			log.Printf("%s: %s, stopping firecracker", ProcessName, sig)
+			log.Info("signal received, stopping firecracker", "signal", sig.String())
 			_ = proc.Signal(syscall.SIGTERM)
 			if killTimer == nil {
 				killTimer = time.After(killGrace)
 			}
 		case <-killTimer:
-			log.Printf("%s: firecracker still running after %s, killing it", ProcessName, killGrace)
+			log.Warn("firecracker still running after grace period, killing it", "grace", killGrace.String())
 			_ = proc.Kill()
 		}
 	}

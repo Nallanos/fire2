@@ -2,7 +2,7 @@ package sandboxmgr
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 )
 
@@ -49,7 +49,7 @@ func (m *Manager) checkLiveness() {
 	}
 	m.mu.Unlock()
 	for _, id := range dead {
-		log.Printf("sandbox %s: service goroutine exited, marking dead", id)
+		slog.Warn("service goroutine exited, marking dead", "sandbox_id", id)
 		m.emit(id, StateDead)
 	}
 }
@@ -64,7 +64,7 @@ func (m *Manager) checkLiveness() {
 func (m *Manager) reconcileDisk() {
 	onDisk, err := m.listDisk()
 	if err != nil {
-		log.Printf("sandbox reconciliation: list disk: %v", err)
+		slog.Error("sandbox reconciliation: list disk failed", "err", err)
 		return
 	}
 
@@ -85,9 +85,9 @@ func (m *Manager) reconcileDisk() {
 	m.mu.Unlock()
 
 	for _, id := range orphans {
-		log.Printf("sandbox reconciliation: reaping orphan %s", id)
+		slog.Warn("sandbox reconciliation: reaping orphan", "sandbox_id", id)
 		if err := m.reap(id); err != nil {
-			log.Printf("sandbox reconciliation: reap %s: %v", id, err)
+			slog.Error("sandbox reconciliation: reap failed", "sandbox_id", id, "err", err)
 		}
 		m.mu.Lock()
 		delete(m.deleting, id)

@@ -1,12 +1,16 @@
 package main
 
 import (
-	"log"
+	"log/slog"
 	"time"
+
+	"github/nallanos/fire2/internal/app"
 )
 
 func main() {
-	log.Printf("keepalive started")
+	app.SetupLogger("keepalive")
+
+	slog.Info("keepalive started")
 	for {
 		time.Sleep(1 * time.Hour)
 	}

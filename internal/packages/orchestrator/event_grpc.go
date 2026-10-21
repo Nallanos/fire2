@@ -3,7 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net"
 	"strings"
 	"time"
@@ -143,8 +143,9 @@ func (s *EventGRPCServer) ReportWorkerHeartbeat(ctx context.Context, req *orches
 
 	w := workerFromHeartbeat(req)
 
-	log.Printf("received worker heartbeat: worker_id=%s status=%s address=%s port=%d capacity=%d cpu_usage=%d mem_usage=%d",
-		req.GetWorkerId(), req.GetStatus(), req.GetAddress(), req.GetPort(), req.GetCapacity(), req.GetCpuUsage(), req.GetMemUsage())
+	slog.Debug("received worker heartbeat",
+		"worker_id", req.GetWorkerId(), "status", req.GetStatus(), "address", req.GetAddress(),
+		"port", req.GetPort(), "capacity", req.GetCapacity(), "cpu_usage", req.GetCpuUsage(), "mem_usage", req.GetMemUsage())
 
 	if !req.GetInventoryComplete() {
 		// No usable inventory: only the worker row is refreshed. Sandbox
@@ -252,11 +253,11 @@ func (s *EventGRPCServer) applyStatusFromState(ctx context.Context, sandboxID, w
 
 	n, err := s.sandboxRepo.UpdateStatusFenced(ctx, sandboxID, workerID, token, target, allowedFrom...)
 	if err != nil {
-		log.Printf("update sandbox status failed: sandbox=%s state=%s err=%v", sandboxID, state, err)
+		slog.Error("update sandbox status failed", "sandbox_id", sandboxID, "state", state.String(), "err", err)
 		return
 	}
 	if n == 0 {
-		log.Printf("ignored sandbox event: sandbox=%s state=%s — current status not in allowed set, or sandbox not hosted by this worker incarnation", sandboxID, state)
+		slog.Info("ignored sandbox event: current status not in allowed set, or sandbox not hosted by this worker incarnation", "sandbox_id", sandboxID, "state", state.String())
 	}
 }
 

@@ -3,7 +3,7 @@ package sandboxmgr
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 )
 
@@ -33,6 +33,7 @@ type command struct {
 // time, so no lock guards the fields below the line.
 type Service struct {
 	id           string
+	log          *slog.Logger // carries sandbox_id
 	newVM        vmFactory
 	report       func(State) // called only when the state changes
 	cmds         chan command
@@ -48,6 +49,7 @@ type Service struct {
 func newService(id string, newVM vmFactory, report func(State), pollInterval time.Duration) *Service {
 	return &Service{
 		id:           id,
+		log:          slog.With("sandbox_id", id),
 		newVM:        newVM,
 		report:       report,
 		cmds:         make(chan command),
@@ -87,7 +89,7 @@ func (s *Service) run(ctx context.Context) {
 	defer close(s.done)
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("sandbox %s: service panicked: %v", s.id, r)
+			s.log.Error("service panicked", "panic", r)
 			s.setState(StateDead)
 		}
 	}()
@@ -109,7 +111,7 @@ func (s *Service) run(ctx context.Context) {
 
 		case err := <-s.exited:
 			s.exited = nil
-			log.Printf("sandbox %s: firecracker exited: %v", s.id, err)
+			s.log.Warn("firecracker exited", "err", err)
 			s.setState(StateDead)
 
 		case <-ticker.C:
@@ -156,7 +158,7 @@ func (s *Service) create(ctx context.Context, in CreateInput) error {
 	s.vm = v
 	if err := v.Create(ctx); err != nil {
 		if cleanupErr := s.remove(); cleanupErr != nil {
-			log.Printf("sandbox %s: cleanup after failed create: %v", s.id, cleanupErr)
+			s.log.Error("cleanup after failed create failed", "err", cleanupErr)
 		}
 		return err
 	}
@@ -196,7 +198,7 @@ func (s *Service) remove() error {
 	}
 	stopErr := s.vm.Stop()
 	if stopErr != nil {
-		log.Printf("remove sandbox %s: stop failed, cleaning up anyway: %v", s.id, stopErr)
+		s.log.Warn("stop failed, cleaning up anyway", "err", stopErr)
 	}
 	if err := s.vm.Cleanup(); err != nil {
 		return fmt.Errorf("remove sandbox %s: %w", s.id, err)

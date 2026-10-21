@@ -1,7 +1,7 @@
 package app
 
 import (
-	"log"
+	"log/slog"
 	"os"
 	"time"
 
@@ -66,9 +66,9 @@ func ConfigFromEnv() Config {
 	if bindHost == "" {
 		if ip, err := tailscalepkg.IPv4(); err == nil {
 			bindHost = ip
-			log.Printf("auto-discovered tailscale address: %s", ip)
+			slog.Info("auto-discovered tailscale address", "address", ip)
 		} else {
-			log.Printf("tailscale address auto-discovery failed, falling back: %v", err)
+			slog.Warn("tailscale address auto-discovery failed, falling back", "err", err)
 		}
 	}
 
