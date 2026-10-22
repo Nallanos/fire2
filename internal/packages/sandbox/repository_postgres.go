@@ -34,6 +34,12 @@ type Repository interface {
 	// ClaimLivenessExpired moves every active sandbox hosted by a worker that has
 	// not listed it for longer than timeout to cleanup_pending and returns their IDs.
 	ClaimLivenessExpired(ctx context.Context, timeout time.Duration) ([]string, error)
+	// ClaimStalledCreation moves every sandbox that has been pending or scheduling
+	// for longer than timeout to cleanup_pending and returns their IDs. Those
+	// have no worker yet, so liveness never sees them; a create job that gave up
+	// without leaving a trace would hold them until their TTL. timeout must be
+	// positive.
+	ClaimStalledCreation(ctx context.Context, timeout time.Duration) ([]string, error)
 	// ReconcileInventory matches a worker's complete heartbeat inventory
 	// against the sandboxes assigned to it, reacting to each reported state
 	// (see Inventory): live ones get last_seen_at refreshed, running ones move

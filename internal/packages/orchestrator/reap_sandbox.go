@@ -27,6 +27,10 @@ func (ReapSandboxArgs) Kind() string { return "reap_sandbox" }
 //   - TTL: created_at + ttl (seconds) has passed → cleanup ends in stopped.
 //   - Liveness: the hosting worker has not listed the sandbox in a heartbeat
 //     inventory for longer than livenessTimeout → cleanup ends in failed.
+//   - Stalled creation: the sandbox has been pending or scheduling for longer
+//     than createTimeout → cleanup ends in failed. It has no worker, so
+//     liveness cannot see it, and only its TTL would end it otherwise. A
+//     createTimeout of zero or less turns this check off.
 //
 // Claiming (status → cleanup_pending) and enqueueing happen in one transaction,
 // and the claim skips locked rows, so concurrent reapers never double-enqueue
@@ -36,10 +40,11 @@ type ReapSandboxWorker struct {
 	pool            *pgxpool.Pool
 	sandboxRepo     sandboxpkg.Repository
 	livenessTimeout time.Duration
+	createTimeout   time.Duration
 }
 
-func NewReapSandboxWorker(sandboxRepo sandboxpkg.Repository, pool *pgxpool.Pool, livenessTimeout time.Duration) *ReapSandboxWorker {
-	return &ReapSandboxWorker{sandboxRepo: sandboxRepo, pool: pool, livenessTimeout: livenessTimeout}
+func NewReapSandboxWorker(sandboxRepo sandboxpkg.Repository, pool *pgxpool.Pool, livenessTimeout, createTimeout time.Duration) *ReapSandboxWorker {
+	return &ReapSandboxWorker{sandboxRepo: sandboxRepo, pool: pool, livenessTimeout: livenessTimeout, createTimeout: createTimeout}
 }
 
 func (w *ReapSandboxWorker) Work(ctx context.Context, job *river.Job[ReapSandboxArgs]) error {
@@ -60,15 +65,26 @@ func (w *ReapSandboxWorker) Work(ctx context.Context, job *river.Job[ReapSandbox
 		return fmt.Errorf("reap sandbox: claim liveness-expired: %w", err)
 	}
 
-	if len(expired)+len(dead) == 0 {
+	var stalled []string
+	if w.createTimeout > 0 {
+		stalled, err = repo.ClaimStalledCreation(ctx, w.createTimeout)
+		if err != nil {
+			return fmt.Errorf("reap sandbox: claim stalled creation: %w", err)
+		}
+	}
+
+	if len(expired)+len(dead)+len(stalled) == 0 {
 		return nil
 	}
 
-	params := make([]river.InsertManyParams, 0, len(expired)+len(dead))
+	params := make([]river.InsertManyParams, 0, len(expired)+len(dead)+len(stalled))
 	for _, id := range expired {
 		params = append(params, cleanupParams(id, sandboxpkg.StatusStopped))
 	}
 	for _, id := range dead {
+		params = append(params, cleanupParams(id, sandboxpkg.StatusFailed))
+	}
+	for _, id := range stalled {
 		params = append(params, cleanupParams(id, sandboxpkg.StatusFailed))
 	}
 
@@ -79,7 +95,7 @@ func (w *ReapSandboxWorker) Work(ctx context.Context, job *river.Job[ReapSandbox
 		return fmt.Errorf("reap sandbox: commit: %w", err)
 	}
 
-	slog.Info("reap sandbox: claimed expired sandboxes", "ttl_expired", len(expired), "liveness_expired", len(dead))
+	slog.Info("reap sandbox: claimed expired sandboxes", "ttl_expired", len(expired), "liveness_expired", len(dead), "stalled_creation", len(stalled))
 	return nil
 }
 
