@@ -41,4 +41,4 @@ Loaded from environment in `ConfigFromEnv()`:
 
 Tests in this package use `//go:build integration` and spin up a real Postgres container via testcontainers (`setupPostgres`/`setupPostgresWithPool`). They also build a River client against the test DB (`setupFastRiverClient`: only the create and cleanup workers, 50ms retry backoff instead of `StrongRetryPolicy`'s). `startFakeWorker`/`fakeWorkerGRPCServer` fakes the worker's gRPC server for tests that need a real `CreateSandbox` round-trip without a real Firecracker host; it remembers the sandboxes it created and lists them in `ListRunningSandboxes`.
 
-Every sandbox route sits behind `RequireAuth`: `authHeader(t, pool)` creates a user and a non-expiring session and returns the `Authorization: Bearer` value; `createSandbox`, `listSandboxes`, `getSandbox`, `postSandbox` and `doRequest` take it.
+Every sandbox route sits behind `RequireAuth`: `testutil.AuthHeader(t, pool)` creates a user and a non-expiring session and returns the `Authorization: Bearer` value; `createSandbox`, `listSandboxes`, `getSandbox`, `postSandbox` and `doRequest` take it.

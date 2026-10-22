@@ -3,6 +3,7 @@ package testutil
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -16,52 +17,34 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
+// pgReadyTimeout is how long one container gets to answer. Many may start at
+// once (parallel tests) on a loaded machine.
+const pgReadyTimeout = 20 * time.Second
+
+// pgAttempts is how many containers SetupPostgres tries. A container whose
+// mapped port never answers (seen under load with Docker Desktop) is thrown
+// away rather than waited for.
+const pgAttempts = 3
+
 // SetupPostgres starts a testcontainer Postgres, runs all schema migrations, and returns a pool.
 // A cleanup hook is registered on t to stop the container and close the pool.
 func SetupPostgres(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	t.Helper()
 
-	container, err := postgres.RunContainer(ctx,
-		postgres.WithDatabase("fire2"),
-		postgres.WithUsername("fire2"),
-		postgres.WithPassword("fire2"),
-	)
-	if err != nil {
-		t.Fatalf("start postgres container: %v", err)
-	}
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
-
-	connStr, err := container.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		t.Fatalf("connection string: %v", err)
-	}
-
-	pool, err := pgxpool.New(ctx, connStr)
-	if err != nil {
-		t.Fatalf("pgxpool.New: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	sqlDB := stdlib.OpenDBFromPool(pool)
-	t.Cleanup(func() { _ = sqlDB.Close() })
-
-	// Many containers may start at once (parallel tests): give a loaded
-	// machine time, and say so when Postgres never answers instead of failing
-	// later on a migration.
-	const readyTimeout = 60 * time.Second
-	deadline := time.Now().Add(readyTimeout)
-	var pingErr error
-	for time.Now().Before(deadline) {
-		pingCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
-		pingErr = sqlDB.PingContext(pingCtx)
-		cancel()
-		if pingErr == nil {
+	var pool *pgxpool.Pool
+	var sqlDB *sql.DB
+	var err error
+	for attempt := 1; attempt <= pgAttempts; attempt++ {
+		var stop func()
+		pool, sqlDB, stop, err = startPostgres(ctx)
+		if err == nil {
+			t.Cleanup(stop)
 			break
 		}
-		time.Sleep(300 * time.Millisecond)
+		t.Logf("postgres container attempt %d/%d: %v", attempt, pgAttempts, err)
 	}
-	if pingErr != nil {
-		t.Fatalf("postgres not ready after %s: %v", readyTimeout, pingErr)
+	if err != nil {
+		t.Fatalf("postgres not ready after %d containers: %v", pgAttempts, err)
 	}
 
 	if err := ApplyMigrations(sqlDB); err != nil {
@@ -120,4 +103,48 @@ func migrationUpSection(text string) string {
 		section = section[:j]
 	}
 	return strings.TrimSpace(section)
+}
+
+// startPostgres starts one container and waits for it to answer. stop releases
+// everything it started; on error nothing is left running.
+func startPostgres(ctx context.Context) (pool *pgxpool.Pool, sqlDB *sql.DB, stop func(), err error) {
+	container, err := postgres.RunContainer(ctx,
+		postgres.WithDatabase("fire2"),
+		postgres.WithUsername("fire2"),
+		postgres.WithPassword("fire2"),
+	)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("start container: %w", err)
+	}
+
+	connStr, err := container.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		_ = container.Terminate(ctx)
+		return nil, nil, nil, fmt.Errorf("connection string: %w", err)
+	}
+	pool, err = pgxpool.New(ctx, connStr)
+	if err != nil {
+		_ = container.Terminate(ctx)
+		return nil, nil, nil, fmt.Errorf("pgxpool.New: %w", err)
+	}
+	sqlDB = stdlib.OpenDBFromPool(pool)
+	stop = func() {
+		_ = sqlDB.Close()
+		pool.Close()
+		_ = container.Terminate(ctx)
+	}
+
+	var pingErr error
+	deadline := time.Now().Add(pgReadyTimeout)
+	for time.Now().Before(deadline) {
+		pingCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+		pingErr = sqlDB.PingContext(pingCtx)
+		cancel()
+		if pingErr == nil {
+			return pool, sqlDB, stop, nil
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	stop()
+	return nil, nil, nil, fmt.Errorf("no answer after %s: %w", pgReadyTimeout, pingErr)
 }

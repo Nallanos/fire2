@@ -29,10 +29,10 @@ import (
 	"google.golang.org/grpc"
 
 	workerv1 "github/nallanos/fire2/gen/worker/v1"
-	authpkg "github/nallanos/fire2/internal/packages/auth"
 	"github/nallanos/fire2/internal/packages/orchestrator"
 	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
 	workerpkg "github/nallanos/fire2/internal/packages/worker"
+	"github/nallanos/fire2/internal/testutil"
 )
 
 func TestSandboxAPIFlow(t *testing.T) {
@@ -72,7 +72,7 @@ func TestSandboxAPIFlow(t *testing.T) {
 	srv := httptest.NewServer(app.Router())
 	defer srv.Close()
 
-	auth := authHeader(t, pool)
+	auth := testutil.AuthHeader(t, pool)
 	created := createSandbox(t, srv.URL, auth)
 	if created.ID == "" {
 		t.Fatalf("expected sandbox id")
@@ -316,25 +316,6 @@ func (f *fakeWorkerGRPCServer) GetWorkerInfo(_ context.Context, _ *workerv1.GetW
 		CpuUsage:  0,
 		MemUsage:  0,
 	}, nil
-}
-
-// authHeader creates a user and a non-expiring session through the auth service
-// and returns the Authorization header value that carries it: every sandbox
-// route sits behind RequireAuth.
-func authHeader(t *testing.T, pool *pgxpool.Pool) string {
-	t.Helper()
-	ctx := context.Background()
-
-	svc := authpkg.NewService(authpkg.NewPostgresRepository(pool))
-	user, err := svc.EnsureUser(ctx, "test@fire.local", "test-password")
-	if err != nil {
-		t.Fatalf("ensure user: %v", err)
-	}
-	session, err := svc.CreateNonExpiringSession(ctx, user.ID)
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	return "Bearer " + session.Token
 }
 
 // doRequest sends a request carrying the Authorization header auth. The caller
