@@ -102,8 +102,10 @@ func TestA3_WorkerReplacedByARefusedOldBinary(t *testing.T) {
 	if !eventually(t, settle, func() bool { return !w.VMs.Hosts(sbx.ID) }) {
 		t.Fatalf("the VM of a failed sandbox is still on the worker that answers\n%s", c.dump())
 	}
-	if status := c.Worker("w1").Status; status != workerpkg.WorkerStatusInactive {
-		t.Errorf("w1 is %s while its heartbeats are refused, want inactive", status)
+	// The worker reaper and liveness both run on the same 2s delay, so w1 may
+	// not be marked yet when the sandbox is already failed.
+	if !eventually(t, settle, func() bool { return c.Worker("w1").Status == workerpkg.WorkerStatusInactive }) {
+		t.Errorf("w1 is %s while its heartbeats are refused, want inactive", c.Worker("w1").Status)
 	}
 
 	legacy.Stop()
