@@ -38,9 +38,9 @@ func TestC1_LostCreateResponseBootsOneVM(t *testing.T) {
 // an answer, so the create job runs out of attempts. The sandbox goes to
 // cleanup_pending, the worker is asked to remove the VM, and it ends failed.
 //
-// Liveness is set out of reach: with the retries slower than its delay (a loaded
-// machine is enough), it fails the sandbox under the job's feet and the API
-// answers 201 for a failed sandbox (see docs/state-divergence.md, "constats").
+// Liveness is set out of reach: retries slower than its delay (a loaded machine
+// is enough) would make it fail the sandbox between two attempts, which is what
+// C5 checks on its own.
 func TestC2_CreateJobExhaustsItsAttemptsAfterBooting(t *testing.T) {
 	c := newCluster(t, WithLivenessTimeout(time.Hour))
 	w := c.AddWorker("w1")

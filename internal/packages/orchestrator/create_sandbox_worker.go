@@ -86,10 +86,28 @@ func (w *CreateSandboxWorker) Work(ctx context.Context, job *river.Job[CreateSan
 		sandboxpkg.StatusFailed,
 		sandboxpkg.StatusCleanupPending,
 		sandboxpkg.StatusCleanedUp:
-		return nil // already terminal or running — idempotent no-op
+		_, err := settled(sbx)
+		return err
 	default:
 		return fmt.Errorf("unexpected sandbox status %q for sandbox %s", sbx.Status, sandboxID)
 	}
+}
+
+// settled reports whether the create job has nothing left to do for sbx: it
+// is running (nil), or it ended without coming up (a cancellation).
+//
+// A sandbox can end under its job: liveness, the TTL, a delete, a dead VM.
+// Such a job must be cancelled, not completed. A completed job tells the HTTP
+// handler the sandbox was created, and it answers 201 for a sandbox that is
+// gone. Cancelling also stops River from retrying a job that cannot succeed.
+func settled(sbx sandboxpkg.Sandbox) (bool, error) {
+	switch sbx.Status {
+	case sandboxpkg.StatusRunning:
+		return true, nil
+	case sandboxpkg.StatusStopped, sandboxpkg.StatusFailed, sandboxpkg.StatusCleanupPending, sandboxpkg.StatusCleanedUp:
+		return true, river.JobCancel(fmt.Errorf("sandbox %s ended as %s before it came up", sbx.ID, sbx.Status))
+	}
+	return false, nil
 }
 
 // stepScheduling transitions pending → scheduling.
@@ -220,17 +238,27 @@ func (w *CreateSandboxWorker) stepAcknowledge(ctx context.Context, sandboxID str
 	if err != nil {
 		return w.maybeCleanup(ctx, sandboxID, isFinal, job, err)
 	}
-	if sbx.Status == sandboxpkg.StatusRunning {
-		return nil // event handler already flipped it
-	}
-	if sbx.Status == sandboxpkg.StatusFailed {
-		return nil // container died — event handler flipped it; cleanup will be scheduled elsewhere
+	// Running: the event handler already flipped it. Ended: it died under us.
+	if done, err := settled(sbx); done {
+		return err
 	}
 
-	_, _, err = w.sandboxRepo.UpdateStatus(ctx, sandboxID, sandboxpkg.StatusRunning,
+	_, n, err := w.sandboxRepo.UpdateStatus(ctx, sandboxID, sandboxpkg.StatusRunning,
 		sandboxpkg.StatusStarting)
 	if err != nil {
 		return w.maybeCleanup(ctx, sandboxID, isFinal, job, fmt.Errorf("set running: %w", err))
+	}
+	if n == 0 {
+		// Moved since we read it: say what it became rather than report a
+		// success that did not happen.
+		sbx, err = w.sandboxRepo.GetByID(ctx, sandboxID)
+		if err != nil {
+			return w.maybeCleanup(ctx, sandboxID, isFinal, job, err)
+		}
+		if done, err := settled(sbx); done {
+			return err
+		}
+		return w.maybeCleanup(ctx, sandboxID, isFinal, job, fmt.Errorf("sandbox %s is %s, expected starting", sandboxID, sbx.Status))
 	}
 	return nil
 }
