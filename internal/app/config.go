@@ -32,6 +32,12 @@ type Config struct {
 	SandboxLivenessTimeout time.Duration
 	// SandboxReaperInterval is how often the TTL/liveness sandbox reaper runs.
 	SandboxReaperInterval time.Duration
+	// SandboxCreateTimeout is how long a sandbox may stay pending or scheduling
+	// before the reaper fails it. A create job that gave up without leaving a
+	// trace (discarded, orchestrator lost) would otherwise hold its row until
+	// the sandbox's TTL. It must exceed the longest a healthy create job runs.
+	// Defaults to 5m.
+	SandboxCreateTimeout time.Duration
 }
 
 const (
@@ -40,6 +46,8 @@ const (
 
 	defaultSandboxLivenessTimeout = 15 * time.Second
 	defaultSandboxReaperInterval  = time.Minute
+
+	defaultSandboxCreateTimeout = 5 * time.Minute
 )
 
 func ConfigFromEnv() Config {
@@ -81,6 +89,7 @@ func ConfigFromEnv() Config {
 		ReaperInterval:           durationFromEnv("REAPER_INTERVAL", defaultReaperInterval),
 		SandboxLivenessTimeout:   durationFromEnv("SANDBOX_LIVENESS_TIMEOUT", defaultSandboxLivenessTimeout),
 		SandboxReaperInterval:    durationFromEnv("SANDBOX_REAPER_INTERVAL", defaultSandboxReaperInterval),
+		SandboxCreateTimeout:     durationFromEnv("SANDBOX_CREATE_TIMEOUT", defaultSandboxCreateTimeout),
 	}
 }
 

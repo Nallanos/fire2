@@ -52,6 +52,9 @@ const (
 	reaperInterval        = 200 * time.Millisecond
 	livenessTimeout       = 2 * time.Second
 	sandboxReaperInterval = 200 * time.Millisecond
+	// createTimeout is generous: a healthy creation takes a few seconds, and a
+	// scenario that is not about stalled creations must never see one reaped.
+	createTimeout = 30 * time.Second
 
 	// settle bounds how long the system gets to converge after a scenario's
 	// last action.
@@ -86,6 +89,12 @@ func WithLivenessTimeout(d time.Duration) ClusterOption {
 	return func(cfg *app.Config) { cfg.SandboxLivenessTimeout = d }
 }
 
+// WithCreateTimeout changes how long a sandbox may stay pending or scheduling
+// before the reaper fails it.
+func WithCreateTimeout(d time.Duration) ClusterOption {
+	return func(cfg *app.Config) { cfg.SandboxCreateTimeout = d }
+}
+
 // newCluster starts an orchestrator the way cmd/api wires it, with its own
 // database. Scenarios are independent, so it also marks the test parallel.
 func newCluster(t *testing.T, opts ...ClusterOption) *Cluster {
@@ -99,6 +108,7 @@ func newCluster(t *testing.T, opts ...ClusterOption) *Cluster {
 		ReaperInterval:         reaperInterval,
 		SandboxLivenessTimeout: livenessTimeout,
 		SandboxReaperInterval:  sandboxReaperInterval,
+		SandboxCreateTimeout:   createTimeout,
 	}
 	for _, opt := range opts {
 		opt(&cfg)
