@@ -22,7 +22,9 @@ Group={{ victorialogs_group }}
 # a literal $.)
 RuntimeDirectory=victorialogs
 ExecStartPre=+/bin/sh -c 'for i in $$(seq 30); do ip=$$(tailscale ip -4 | head -n1); [ -n "$$ip" ] && break; sleep 1; done; [ -n "$$ip" ] || exit 1; echo "VL_LISTEN_ADDR=$$ip:{{ victorialogs_port }}" > /run/victorialogs/listen.env'
-EnvironmentFile=/run/victorialogs/listen.env
+# "-": systemd loads this file before every command, ExecStartPre included,
+# and ExecStartPre is what creates it. ExecStart only runs once it succeeded.
+EnvironmentFile=-/run/victorialogs/listen.env
 ExecStart={{ victorialogs_bin }} \
   -storageDataPath={{ victorialogs_data_dir }} \
   -retentionPeriod={{ victorialogs_retention_period }} \
