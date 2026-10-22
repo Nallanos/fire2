@@ -31,14 +31,21 @@ func detectWorkerAddress() (string, error) {
 	return "", errors.New("no suitable IP address found")
 }
 
-// Per-sandbox footprint used to size a worker. Matches the sandbox defaults
-// (migration 007: 1 vCPU / 256 MiB).
+// Per-sandbox footprint used to size a worker. The guest matches the sandbox
+// defaults (migration 007: 1 vCPU / 256 MiB).
 const (
 	sandboxVcpu   = 1
 	sandboxMemMiB = 256
-	// memReserveMiB is held back from the memory budget for the OS, the worker
-	// process and per-microVM Firecracker overhead.
-	memReserveMiB = 128
+	// sandboxOverheadMiB is what each microVM costs on top of its guest
+	// memory: the Firecracker process, its KVM structures and devices. An idle
+	// 256 MiB guest was measured at 176 MiB resident, and grows to its full
+	// size plus this once the guest has touched all its memory.
+	sandboxOverheadMiB = 64
+	// memReserveMiB is held back from the memory budget for everything that is
+	// not a microVM: the OS, the worker, Vector, tailscaled. Measured at about
+	// 400 MiB on the 1 GiB workers, which have no swap: a budget that ignores
+	// it ends in the OOM killer.
+	memReserveMiB = 384
 )
 
 // computeCapacity returns how many sandboxes a worker can host: the scarcer of
@@ -46,7 +53,7 @@ const (
 // overrides the computation but never exceeds what the budgets allow.
 func computeCapacity(cpuBudget, memBudgetMiB int) int {
 	byCPU := cpuBudget / sandboxVcpu
-	byMem := (memBudgetMiB - memReserveMiB) / sandboxMemMiB
+	byMem := (memBudgetMiB - memReserveMiB) / (sandboxMemMiB + sandboxOverheadMiB)
 	capacity := min(byCPU, byMem)
 	if capacity < 0 {
 		capacity = 0

@@ -12,8 +12,12 @@ fire2_install_dir: /opt/fire2
 # only if you need a fixed port.
 worker_port: 0
 worker_heartbeat_interval: 5s
-worker_cpu_budget: 4
-worker_mem_budget: 3000
+
+# worker_cpu_budget / worker_mem_budget (MiB) are deliberately not set: the
+# worker is the only process on its host, so it sizes itself from the machine
+# (runtime.NumCPU and MemTotal), and its capacity is derived from them
+# (computeCapacity in internal/packages/worker). Set them per host in the
+# inventory only to hold part of a machine back.
 
 # Stable identifier passed as WORKER_ID: the worker row in the DB.
 worker_id: "{{ ansible_hostname }}"
