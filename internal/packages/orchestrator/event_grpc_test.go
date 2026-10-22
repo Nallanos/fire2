@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -529,9 +530,17 @@ func TestReportWorkerHeartbeat_LogsReceivedHeartbeat(t *testing.T) {
 	eventRepo := NewEventRepository(pool)
 	workerRepo := workerpkg.NewPostgresRepository(pool)
 
+	// The heartbeat is logged by slog at Debug, below the default handler's
+	// level, so log.SetOutput would not see it. SetDefault also points the log
+	// package at the new handler: restore both.
 	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	defer log.SetOutput(os.Stderr)
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer func() {
+		slog.SetDefault(prev)
+		log.SetOutput(os.Stderr)
+		log.SetFlags(log.LstdFlags)
+	}()
 
 	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo)
 	token := registerWorker(t, ctx, srv, "worker-hb")

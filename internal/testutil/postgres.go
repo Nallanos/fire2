@@ -45,15 +45,23 @@ func SetupPostgres(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	sqlDB := stdlib.OpenDBFromPool(pool)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
-	deadline := time.Now().Add(20 * time.Second)
+	// Many containers may start at once (parallel tests): give a loaded
+	// machine time, and say so when Postgres never answers instead of failing
+	// later on a migration.
+	const readyTimeout = 60 * time.Second
+	deadline := time.Now().Add(readyTimeout)
+	var pingErr error
 	for time.Now().Before(deadline) {
 		pingCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
-		err := sqlDB.PingContext(pingCtx)
+		pingErr = sqlDB.PingContext(pingCtx)
 		cancel()
-		if err == nil {
+		if pingErr == nil {
 			break
 		}
 		time.Sleep(300 * time.Millisecond)
+	}
+	if pingErr != nil {
+		t.Fatalf("postgres not ready after %s: %v", readyTimeout, pingErr)
 	}
 
 	if err := ApplyMigrations(sqlDB); err != nil {
