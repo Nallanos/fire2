@@ -4,6 +4,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -166,8 +167,11 @@ func TestCreateSandboxWorker_StartingToRunning(t *testing.T) {
 	}
 }
 
-// D6/D7: Terminal and already-running statuses → Work() is a no-op.
-func TestCreateSandboxWorker_TerminalStatus_NoOp(t *testing.T) {
+// D6/D7: a sandbox already running needs nothing from the create job. A sandbox
+// that ended without coming up (failed, stopped, being cleaned up) was torn down
+// under the job: the job is cancelled, never completed, or the HTTP handler
+// answers 201 Created for it.
+func TestCreateSandboxWorker_SandboxAlreadySettled(t *testing.T) {
 	ctx := context.Background()
 	pool := testutil.SetupPostgres(t, ctx)
 
@@ -175,16 +179,22 @@ func TestCreateSandboxWorker_TerminalStatus_NoOp(t *testing.T) {
 	workerRepo := workerpkg.NewPostgresRepository(pool)
 	jobWorker := NewCreateSandboxWorker(pool, sandboxRepo, workerRepo)
 
-	for _, status := range []sandboxpkg.Status{
-		sandboxpkg.StatusFailed,
-		sandboxpkg.StatusRunning,
-		sandboxpkg.StatusCleanupPending,
-		sandboxpkg.StatusCleanedUp,
+	for status, wantCancel := range map[sandboxpkg.Status]bool{
+		sandboxpkg.StatusRunning:        false,
+		sandboxpkg.StatusFailed:         true,
+		sandboxpkg.StatusStopped:        true,
+		sandboxpkg.StatusCleanupPending: true,
+		sandboxpkg.StatusCleanedUp:      true,
 	} {
-		id := "sbx-d-terminal-" + string(status)
+		id := "sbx-d-settled-" + string(status)
 		seedSandboxForJob(t, ctx, sandboxRepo, id, status, nil)
 
-		if err := jobWorker.Work(ctx, fakeCreateJob(id, 1, 5)); err != nil {
+		err := jobWorker.Work(ctx, fakeCreateJob(id, 1, 5))
+		var cancelled *rivertype.JobCancelError
+		switch {
+		case wantCancel && !errors.As(err, &cancelled):
+			t.Fatalf("Work() for status %s returned %v, want a job cancellation", status, err)
+		case !wantCancel && err != nil:
 			t.Fatalf("Work() for status %s returned error: %v", status, err)
 		}
 
