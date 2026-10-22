@@ -56,6 +56,7 @@ type SimWorker struct {
 	partitioned    atomic.Bool
 	stripInventory atomic.Bool
 	lostCreates    atomic.Int64
+	createDelay    atomic.Int64 // nanoseconds
 
 	mu       sync.Mutex
 	capacity int
@@ -200,6 +201,11 @@ func (w *SimWorker) Partition(on bool) { w.partitioned.Store(on) }
 // learns it.
 func (w *SimWorker) LoseCreateResponses(n int) { w.lostCreates.Store(int64(n)) }
 
+// SlowCreates makes the worker take d before it handles a CreateSandbox call:
+// a loaded machine, or a slow disk. The orchestrator waits that long on each
+// attempt.
+func (w *SimWorker) SlowCreates(d time.Duration) { w.createDelay.Store(int64(d)) }
+
 // LoseNextCreateResponse is LoseCreateResponses(1).
 func (w *SimWorker) LoseNextCreateResponse() { w.LoseCreateResponses(1) }
 
@@ -237,6 +243,13 @@ func (w *SimWorker) recordHeartbeat(err error) {
 func (w *SimWorker) intercept(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 	if w.partitioned.Load() {
 		return nil, errPartitioned
+	}
+	if d := time.Duration(w.createDelay.Load()); d > 0 && strings.HasSuffix(info.FullMethod, "/CreateSandbox") {
+		select {
+		case <-time.After(d):
+		case <-ctx.Done():
+			return nil, status.FromContextError(ctx.Err()).Err()
+		}
 	}
 	resp, err := handler(ctx, req)
 	if err == nil && strings.HasSuffix(info.FullMethod, "/CreateSandbox") && w.takeLostCreate() {
