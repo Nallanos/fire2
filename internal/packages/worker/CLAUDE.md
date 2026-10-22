@@ -30,6 +30,13 @@ Worker-side gRPC server, heartbeat logic, and forwarding of sandbox state change
 
 `HeartbeatExpired(lastHeartbeat, timeout) bool` — returns true if the heartbeat is overdue (default timeout 15s) or if `lastHeartbeat` is zero. Used to detect stale workers.
 
+`RunHeartbeat` treats an orchestrator **refusal that retrying cannot fix** (`InvalidArgument`, `Unimplemented`, `PermissionDenied`, `Unauthenticated`: typically a worker older than the orchestrator, e.g. `fencing_token is required`) differently from a transient error:
+- one `ERROR` log when the streak starts, then at most every 5 minutes (code, reason, how long, next attempt, hint), instead of one line per beat;
+- the wait doubles (5s, 10s, ... up to 1 minute) until a heartbeat is accepted again, which is logged at `INFO`;
+- after 10 minutes without an accepted heartbeat it returns `ErrHeartbeatRefused`; `ServeGRPC` stops the server and returns it, and `cmd/worker` exits with `ExitHeartbeatRefused` (78). The unit lists 78 in `RestartPreventExitStatus`, so it stays `failed` instead of restarting into the same refusal. The VMs live on under their shims.
+
+`Unavailable`, timeouts and a stale fencing token (`FailedPrecondition`) are not in that class: they keep the old behaviour (one `ERROR` per beat, no backoff).
+
 ## gRPC server
 
 `ServeGRPC(address, server)` listens and serves the `WorkerService` proto, then starts the heartbeat loop once bound. Workers are identified by `WORKER_ID` (defaults to hostname).

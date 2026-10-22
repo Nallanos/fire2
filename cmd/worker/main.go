@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log/slog"
 	"os"
@@ -126,6 +127,11 @@ func main() {
 
 	if err := workerpkg.ServeGRPC(grpcBindHost+":"+workerPort, workerGRPCServer); err != nil {
 		slog.Error("worker gRPC server failed", "err", err)
+		if errors.Is(err, workerpkg.ErrHeartbeatRefused) {
+			// A restart would only be refused again: the unit must not
+			// restart it (RestartPreventExitStatus). The VMs live on.
+			os.Exit(workerpkg.ExitHeartbeatRefused)
+		}
 		os.Exit(1)
 	}
 }

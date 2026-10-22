@@ -104,7 +104,7 @@ func (s *WorkerGRPCServer) GetWorkerInfo(ctx context.Context, req *workerv1.GetW
 	}, nil
 }
 
-// ServeGRPC starts a gRPC server on the specified address and serves the provided WorkerServiceServer implementation. It returns an error if the server fails to start.
+// ServeGRPC starts a gRPC server on the specified address and serves the provided WorkerServiceServer implementation. It returns an error if the server fails to start, or ErrHeartbeatRefused (wrapped) if the orchestrator refused the heartbeats for good and the server was stopped.
 func ServeGRPC(address string, srv workerv1.WorkerServiceServer, opts ...grpc.ServerOption) error {
 	lis, err := net.Listen("tcp", address)
 	if err != nil {
@@ -128,8 +128,21 @@ func ServeGRPC(address string, srv workerv1.WorkerServiceServer, opts ...grpc.Se
 		defer cancel()
 
 		slog.Info("starting heartbeat loop", "interval", heartbeatIntervalFromEnv().String())
-		go workerSrv.service.RunHeartbeat(heartbeatCtx, heartbeatIntervalFromEnv())
-		return grpcServer.Serve(lis)
+		heartbeatErr := make(chan error, 1)
+		go func() {
+			if err := workerSrv.service.RunHeartbeat(heartbeatCtx, heartbeatIntervalFromEnv()); err != nil {
+				// Sent before Stop, so Serve's return sees it.
+				heartbeatErr <- err
+				grpcServer.Stop()
+			}
+		}()
+		serveErr := grpcServer.Serve(lis)
+		select {
+		case err := <-heartbeatErr:
+			return err
+		default:
+			return serveErr
+		}
 	}
 
 	return grpcServer.Serve(lis)

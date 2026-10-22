@@ -20,6 +20,11 @@ EnvironmentFile={{ fire2_install_dir }}/worker.env
 ExecStart={{ fire2_install_dir }}/worker
 Restart=on-failure
 RestartSec=5s
+# Exit status 78: the orchestrator refused every heartbeat for 10 minutes (an
+# older worker against a newer orchestrator, say). A restart would be refused
+# again, so leave the unit failed, visible in `systemctl --failed`, instead of
+# looping. The VMs live on (KillMode=process below).
+RestartPreventExitStatus=78
 
 # Only the worker is killed on stop/restart. Each VM runs under its own
 # fire2-shim, left running on purpose: the next worker re-attaches to it, so
