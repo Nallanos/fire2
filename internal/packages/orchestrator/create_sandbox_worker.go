@@ -110,6 +110,23 @@ func settled(sbx sandboxpkg.Sandbox) (bool, error) {
 	return false, nil
 }
 
+// movedUnder is what a step does when its guarded update changed nothing: the
+// sandbox moved since the job read it (a delete, the TTL, the creation timeout,
+// the event handler). It reads the sandbox again and reports what it became:
+// nil if it is running, a cancellation if it ended, and otherwise an error so
+// River retries the job from the sandbox's real status. Returning nil here
+// would complete the job for a sandbox that did not come up.
+func (w *CreateSandboxWorker) movedUnder(ctx context.Context, sandboxID, step string, isFinal bool, job *river.Job[CreateSandboxArgs]) error {
+	sbx, err := w.sandboxRepo.GetByID(ctx, sandboxID)
+	if err != nil {
+		return w.maybeCleanup(ctx, sandboxID, isFinal, job, err)
+	}
+	if done, err := settled(sbx); done {
+		return err
+	}
+	return w.maybeCleanup(ctx, sandboxID, isFinal, job, fmt.Errorf("sandbox %s moved to %s during %s", sandboxID, sbx.Status, step))
+}
+
 // stepScheduling transitions pending → scheduling.
 func (w *CreateSandboxWorker) stepScheduling(ctx context.Context, sandboxID string, isFinal bool, job *river.Job[CreateSandboxArgs]) error {
 	_, n, err := w.sandboxRepo.UpdateStatus(ctx, sandboxID, sandboxpkg.StatusScheduling, sandboxpkg.StatusPending)
@@ -117,8 +134,7 @@ func (w *CreateSandboxWorker) stepScheduling(ctx context.Context, sandboxID stri
 		return w.maybeCleanup(ctx, sandboxID, isFinal, job, fmt.Errorf("set scheduling: %w", err))
 	}
 	if n == 0 {
-		// Race: status was already advanced by a concurrent attempt — re-read and continue.
-		return nil
+		return w.movedUnder(ctx, sandboxID, "scheduling", isFinal, job)
 	}
 	// Re-enter to run the scheduling step in the same Work() call.
 	sbx, err := w.sandboxRepo.GetByID(ctx, sandboxID)
@@ -175,8 +191,8 @@ func (w *CreateSandboxWorker) stepAssign(ctx context.Context, sbx sandboxpkg.San
 		break
 	}
 	if assigned.WorkerID == nil {
-		// Guard rejected the update — status advanced concurrently, re-read.
-		return nil
+		// Guard rejected the update: the status moved since the job read it.
+		return w.movedUnder(ctx, sbx.ID, "assignment", isFinal, job)
 	}
 
 	return w.stepStartSandbox(ctx, assigned, isFinal, job)
@@ -249,16 +265,7 @@ func (w *CreateSandboxWorker) stepAcknowledge(ctx context.Context, sandboxID str
 		return w.maybeCleanup(ctx, sandboxID, isFinal, job, fmt.Errorf("set running: %w", err))
 	}
 	if n == 0 {
-		// Moved since we read it: say what it became rather than report a
-		// success that did not happen.
-		sbx, err = w.sandboxRepo.GetByID(ctx, sandboxID)
-		if err != nil {
-			return w.maybeCleanup(ctx, sandboxID, isFinal, job, err)
-		}
-		if done, err := settled(sbx); done {
-			return err
-		}
-		return w.maybeCleanup(ctx, sandboxID, isFinal, job, fmt.Errorf("sandbox %s is %s, expected starting", sandboxID, sbx.Status))
+		return w.movedUnder(ctx, sandboxID, "acknowledgement", isFinal, job)
 	}
 	return nil
 }
