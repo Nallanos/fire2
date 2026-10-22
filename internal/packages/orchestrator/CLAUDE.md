@@ -25,7 +25,8 @@ One River job (`create_sandbox`) drives the sandbox through the state machine. `
 | `scheduling` | pick worker via gRPC GetWorkerInfo | `assigned` (worker_id set) |
 | `assigned` | gRPC CreateSandbox | `starting` |
 | `starting` | none (event handler may have already advanced) | `running` |
-| `running`/terminal | no-op | unchanged |
+| `running` | none (already up) | unchanged |
+| `failed`, `stopped`, `cleanup_pending`, `cleaned_up` | none: the sandbox ended under the job (liveness, TTL, delete, dead VM) | unchanged; the job is **cancelled** (`river.JobCancel`), never completed, so the HTTP handler answers 502 instead of 201 |
 
 On the **final attempt**, `maybeCleanup` transitions the sandbox to `cleanup_pending` and enqueues a `cleanup_sandbox` job, then returns `river.JobCancel(...)` so River does not retry.
 
