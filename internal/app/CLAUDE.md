@@ -11,6 +11,13 @@ Constructs the app. Wire-up order matters:
 
 The `*river.Client[pgx.Tx]` is required — it is passed through to `HTTPHandlers` for the `createSandbox` River job flow.
 
+## Orchestrator wiring (`orchestrator.go`)
+
+Shared by `cmd/api` and the divergence harness (`test/divergence`), so the harness tests the wiring that runs in production:
+
+- `NewRiverClient(pool, cfg, retry)` — the five River workers (create, cleanup, reap workers, reap sandbox, remove orphan), the three queues (`default`, `cleanup`, `reap_sandbox`) and the two periodic jobs, whose intervals and timeouts come from `cfg` (`ReaperInterval`, `HeartbeatTimeout`, `SandboxReaperInterval`, `SandboxLivenessTimeout`). The caller runs the River migrations and starts the client.
+- `NewEventServer(pool, riverClient)` — the `EventGRPCServer` with `WithTransactions` and `WithRiverClient`.
+
 ## Middleware stack (applied globally)
 
 `RequestID` → `RealIP` → `Logger` → `Recoverer`
@@ -27,7 +34,11 @@ Loaded from environment in `ConfigFromEnv()`:
 | `ORCHESTRATOR_GRPC_BIND_HOST` | auto-discovered Tailscale IP (see `internal/packages/tailscale`), falls back to `""` (all interfaces) | `OrchestratorGRPCBindHost` |
 | `HEARTBEAT_TIMEOUT` | `15s` | `HeartbeatTimeout` |
 | `REAPER_INTERVAL` | `10s` | `ReaperInterval` |
+| `SANDBOX_LIVENESS_TIMEOUT` | `15s` | `SandboxLivenessTimeout` |
+| `SANDBOX_REAPER_INTERVAL` | `1m` | `SandboxReaperInterval` |
 
 ## Integration tests
 
-Tests in this package use `//go:build integration` and spin up a real Postgres container via testcontainers (`setupPostgres`/`setupPostgresWithPool`). They also build a full River client against the test DB (`setupFastRiverClient`, 50ms retry backoff instead of `StrongRetryPolicy`'s). `startFakeWorker`/`fakeWorkerGRPCServer` fakes the worker's gRPC server for tests that need a real `CreateSandbox` round-trip without a real Firecracker host.
+Tests in this package use `//go:build integration` and spin up a real Postgres container via testcontainers (`setupPostgres`/`setupPostgresWithPool`). They also build a River client against the test DB (`setupFastRiverClient`: only the create and cleanup workers, 50ms retry backoff instead of `StrongRetryPolicy`'s). `startFakeWorker`/`fakeWorkerGRPCServer` fakes the worker's gRPC server for tests that need a real `CreateSandbox` round-trip without a real Firecracker host; it remembers the sandboxes it created and lists them in `ListRunningSandboxes`.
+
+Every sandbox route sits behind `RequireAuth`: `authHeader(t, pool)` creates a user and a non-expiring session and returns the `Authorization: Bearer` value; `createSandbox`, `listSandboxes`, `getSandbox`, `postSandbox` and `doRequest` take it.
