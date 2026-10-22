@@ -90,6 +90,16 @@ func (r *PostgresRepository) ClaimLivenessExpired(ctx context.Context, timeout t
 	return r.queryIDs(ctx, q, timeout.Seconds())
 }
 
+func (r *PostgresRepository) ClaimStalledCreation(ctx context.Context, timeout time.Duration) ([]string, error) {
+	if timeout <= 0 {
+		return nil, errors.New("ClaimStalledCreation: timeout must be positive")
+	}
+	const q = claimToCleanupPrefix + `
+		status IN ('pending', 'scheduling')
+		AND created_at < now() - make_interval(secs => $1)` + claimToCleanupSuffix
+	return r.queryIDs(ctx, q, timeout.Seconds())
+}
+
 func (r *PostgresRepository) ReconcileInventory(ctx context.Context, workerID string, firstInventory bool, inv Inventory) (ReconcileResult, error) {
 	var res ReconcileResult
 	ids := inv.IDs()

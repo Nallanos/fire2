@@ -26,7 +26,7 @@ func NewRiverClient(pool *pgxpool.Pool, cfg Config, retry river.ClientRetryPolic
 	river.AddWorker(workers, orchestrator.NewCreateSandboxWorker(pool, sandboxRepo, workerRepo))
 	river.AddWorker(workers, orchestrator.NewCleanupSandboxWorker(sandboxRepo, workerRepo))
 	river.AddWorker(workers, orchestrator.NewReapWorkersWorker(workerRepo, cfg.HeartbeatTimeout))
-	river.AddWorker(workers, orchestrator.NewReapSandboxWorker(sandboxRepo, pool, cfg.SandboxLivenessTimeout))
+	river.AddWorker(workers, orchestrator.NewReapSandboxWorker(sandboxRepo, pool, cfg.SandboxLivenessTimeout, cfg.SandboxCreateTimeout))
 	river.AddWorker(workers, orchestrator.NewRemoveOrphanWorker(workerRepo))
 
 	return river.NewClient(riverpgxv5.New(pool), &river.Config{
