@@ -3,7 +3,6 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -44,7 +43,7 @@ func TestCreateSandbox_HappyPath(t *testing.T) {
 	srv := httptest.NewServer(app.Router())
 	defer srv.Close()
 
-	sbx := createSandbox(t, srv.URL)
+	sbx := createSandbox(t, srv.URL, testutil.AuthHeader(t, pool))
 	if sbx.ID == "" {
 		t.Fatal("expected sandbox id in response")
 	}
@@ -88,10 +87,7 @@ func TestCreateSandbox_NilRiverClient_500(t *testing.T) {
 
 	payload := map[string]any{"runtime": "node", "ttl": 3600}
 	body, _ := json.Marshal(payload)
-	resp, err := http.Post(srv.URL+"/api/sandboxes", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
+	resp := postSandbox(t, srv.URL, testutil.AuthHeader(t, pool), body)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusInternalServerError {
@@ -115,10 +111,7 @@ func TestCreateSandbox_InvalidJSON_400(t *testing.T) {
 	srv := httptest.NewServer(app.Router())
 	defer srv.Close()
 
-	resp, err := http.Post(srv.URL+"/api/sandboxes", "application/json", bytes.NewReader([]byte("not-json")))
-	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
+	resp := postSandbox(t, srv.URL, testutil.AuthHeader(t, pool), []byte("not-json"))
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusBadRequest {
@@ -144,10 +137,7 @@ func TestCreateSandbox_MissingRuntime_400(t *testing.T) {
 
 	payload := map[string]any{"image": "node:20-alpine", "ttl": 3600}
 	body, _ := json.Marshal(payload)
-	resp, err := http.Post(srv.URL+"/api/sandboxes", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
+	resp := postSandbox(t, srv.URL, testutil.AuthHeader(t, pool), body)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusBadRequest {
@@ -188,12 +178,13 @@ func TestEndToEnd_HappyPath(t *testing.T) {
 	srv := httptest.NewServer(app.Router())
 	defer srv.Close()
 
-	created := createSandbox(t, srv.URL)
+	auth := testutil.AuthHeader(t, pool)
+	created := createSandbox(t, srv.URL, auth)
 	if created.Status != "running" {
 		t.Fatalf("expected running, got %s", created.Status)
 	}
 
-	fetched := getSandbox(t, srv.URL, created.ID)
+	fetched := getSandbox(t, srv.URL, auth, created.ID)
 	if fetched.ID != created.ID {
 		t.Fatalf("GET returned id=%s, want %s", fetched.ID, created.ID)
 	}
@@ -232,10 +223,7 @@ func TestEndToEnd_JobFailure_502(t *testing.T) {
 
 	payload := map[string]any{"runtime": "node", "ttl": 3600}
 	body, _ := json.Marshal(payload)
-	postResp, err := http.Post(srv.URL+"/api/sandboxes", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
+	postResp := postSandbox(t, srv.URL, testutil.AuthHeader(t, pool), body)
 	defer postResp.Body.Close()
 
 	if postResp.StatusCode != http.StatusBadGateway {
@@ -277,10 +265,7 @@ func TestEndToEnd_NoWorkers_503(t *testing.T) {
 
 	payload := map[string]any{"runtime": "node", "ttl": 3600}
 	body, _ := json.Marshal(payload)
-	resp, err := http.Post(srv.URL+"/api/sandboxes", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
+	resp := postSandbox(t, srv.URL, testutil.AuthHeader(t, pool), body)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusServiceUnavailable {

@@ -20,10 +20,8 @@ func (p *FastRetryPolicy) NextRetry(_ *rivertype.JobRow) time.Time {
 	return time.Now().Add(50 * time.Millisecond)
 }
 
-// SetupRiverClient creates a river client with FastRetryPolicy (MaxAttempts=5), two queues
-// (default + cleanup), and the workers registered by addWorkers. It runs river migrations,
-// starts the client, and registers a cleanup hook on t.
-func SetupRiverClient(t *testing.T, ctx context.Context, pool *pgxpool.Pool, addWorkers func(*river.Workers)) *river.Client[pgx.Tx] {
+// MigrateRiver applies River's schema migrations to pool.
+func MigrateRiver(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
 
 	migrator, err := rivermigrate.New(riverpgxv5.New(pool), nil)
@@ -33,6 +31,15 @@ func SetupRiverClient(t *testing.T, ctx context.Context, pool *pgxpool.Pool, add
 	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
 		t.Fatalf("river migrate up: %v", err)
 	}
+}
+
+// SetupRiverClient creates a river client with FastRetryPolicy (MaxAttempts=5), two queues
+// (default + cleanup), and the workers registered by addWorkers. It runs river migrations,
+// starts the client, and registers a cleanup hook on t.
+func SetupRiverClient(t *testing.T, ctx context.Context, pool *pgxpool.Pool, addWorkers func(*river.Workers)) *river.Client[pgx.Tx] {
+	t.Helper()
+
+	MigrateRiver(t, ctx, pool)
 
 	workers := river.NewWorkers()
 	if addWorkers != nil {

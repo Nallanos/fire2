@@ -10,14 +10,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivermigrate"
 
 	"github/nallanos/fire2/internal/app"
 	"github/nallanos/fire2/internal/packages/orchestrator"
-	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
-	workerpkg "github/nallanos/fire2/internal/packages/worker"
 )
 
 func main() {
@@ -43,41 +40,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
-	workerRepo := workerpkg.NewPostgresRepository(pool)
-	eventRepo := orchestrator.NewEventRepository(pool)
-
-	workers := river.NewWorkers()
-	river.AddWorker(workers, orchestrator.NewCreateSandboxWorker(pool, sandboxRepo, workerRepo))
-	river.AddWorker(workers, orchestrator.NewCleanupSandboxWorker(sandboxRepo, workerRepo))
-	river.AddWorker(workers, orchestrator.NewReapWorkersWorker(workerRepo, cfg.HeartbeatTimeout))
-	river.AddWorker(workers, orchestrator.NewReapSandboxWorker(sandboxRepo, pool, cfg.SandboxLivenessTimeout))
-	river.AddWorker(workers, orchestrator.NewRemoveOrphanWorker(workerRepo))
-
-	riverClient, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
-		Queues: map[string]river.QueueConfig{
-			river.QueueDefault:            {MaxWorkers: 10},
-			"cleanup":                     {MaxWorkers: 5},
-			orchestrator.ReapSandboxQueue: {MaxWorkers: 1},
-		},
-		Workers:     workers,
-		MaxAttempts: 5,
-		RetryPolicy: &orchestrator.StrongRetryPolicy{},
-		PeriodicJobs: []*river.PeriodicJob{
-			river.NewPeriodicJob(
-				river.PeriodicInterval(cfg.ReaperInterval),
-				func() (river.JobArgs, *river.InsertOpts) { return orchestrator.ReapWorkersArgs{}, nil },
-				&river.PeriodicJobOpts{RunOnStart: true},
-			),
-			river.NewPeriodicJob(
-				river.PeriodicInterval(cfg.SandboxReaperInterval),
-				func() (river.JobArgs, *river.InsertOpts) {
-					return orchestrator.ReapSandboxArgs{}, &river.InsertOpts{Queue: orchestrator.ReapSandboxQueue}
-				},
-				&river.PeriodicJobOpts{RunOnStart: true},
-			),
-		},
-	})
+	riverClient, err := app.NewRiverClient(pool, cfg, &orchestrator.StrongRetryPolicy{})
 	if err != nil {
 		slog.Error("river.NewClient failed", "err", err)
 		os.Exit(1)
@@ -111,10 +74,7 @@ func main() {
 	go func() {
 		grpcAddr := cfg.OrchestratorGRPCBindHost + ":" + cfg.OrchestratorGRPCPort
 		slog.Info("orchestrator gRPC listening", "address", grpcAddr)
-		grpcErrCh <- orchestrator.ServeEventGRPC(grpcAddr,
-			orchestrator.NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo,
-				orchestrator.WithTransactions(pool),
-				orchestrator.WithRiverClient(riverClient)))
+		grpcErrCh <- orchestrator.ServeEventGRPC(grpcAddr, app.NewEventServer(pool, riverClient))
 	}()
 
 	sigCh := make(chan os.Signal, 1)

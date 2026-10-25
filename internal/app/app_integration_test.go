@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 	"github/nallanos/fire2/internal/packages/orchestrator"
 	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
 	workerpkg "github/nallanos/fire2/internal/packages/worker"
+	"github/nallanos/fire2/internal/testutil"
 )
 
 func TestSandboxAPIFlow(t *testing.T) {
@@ -70,17 +72,18 @@ func TestSandboxAPIFlow(t *testing.T) {
 	srv := httptest.NewServer(app.Router())
 	defer srv.Close()
 
-	created := createSandbox(t, srv.URL)
+	auth := testutil.AuthHeader(t, pool)
+	created := createSandbox(t, srv.URL, auth)
 	if created.ID == "" {
 		t.Fatalf("expected sandbox id")
 	}
 
-	list := listSandboxes(t, srv.URL)
+	list := listSandboxes(t, srv.URL, auth)
 	if len(list) == 0 {
 		t.Fatalf("expected at least one sandbox")
 	}
 
-	fetched := getSandbox(t, srv.URL, created.ID)
+	fetched := getSandbox(t, srv.URL, auth, created.ID)
 	if fetched.ID != created.ID {
 		t.Fatalf("expected sandbox %s, got %s", created.ID, fetched.ID)
 	}
@@ -284,10 +287,22 @@ func startFakeWorker(t *testing.T) (fakeWorkerAddress, int) {
 
 type fakeWorkerGRPCServer struct {
 	workerv1.UnimplementedWorkerServiceServer
+
+	mu      sync.Mutex
+	created []string
 }
 
-func (f *fakeWorkerGRPCServer) CreateSandbox(_ context.Context, _ *workerv1.CreateSandboxRequest) (*workerv1.CreateSandboxResponse, error) {
+func (f *fakeWorkerGRPCServer) CreateSandbox(_ context.Context, req *workerv1.CreateSandboxRequest) (*workerv1.CreateSandboxResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.created = append(f.created, req.GetId())
 	return &workerv1.CreateSandboxResponse{}, nil
+}
+
+func (f *fakeWorkerGRPCServer) ListRunningSandboxes(_ context.Context, _ *workerv1.ListRunningSandboxesRequest) (*workerv1.ListRunningSandboxesResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return &workerv1.ListRunningSandboxesResponse{ContainerIds: append([]string(nil), f.created...)}, nil
 }
 
 func (f *fakeWorkerGRPCServer) GetWorkerInfo(_ context.Context, _ *workerv1.GetWorkerInfoRequest) (*workerv1.GetWorkerInfoResponse, error) {
@@ -303,7 +318,35 @@ func (f *fakeWorkerGRPCServer) GetWorkerInfo(_ context.Context, _ *workerv1.GetW
 	}, nil
 }
 
-func createSandbox(t *testing.T, baseURL string) sandboxResponse {
+// doRequest sends a request carrying the Authorization header auth. The caller
+// closes the response body.
+func doRequest(t *testing.T, method, url, auth string, body []byte) *http.Response {
+	t.Helper()
+
+	req, err := http.NewRequest(method, url, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", auth)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, url, err)
+	}
+	return resp
+}
+
+// postSandbox sends body to POST /api/sandboxes as the user behind auth.
+func postSandbox(t *testing.T, baseURL, auth string, body []byte) *http.Response {
+	t.Helper()
+	return doRequest(t, http.MethodPost, baseURL+"/api/sandboxes", auth, body)
+}
+
+func createSandbox(t *testing.T, baseURL, auth string) sandboxResponse {
+	t.Helper()
+
 	payload := map[string]any{
 		"runtime": "node",
 		"image":   "node:20-alpine",
@@ -315,10 +358,7 @@ func createSandbox(t *testing.T, baseURL string) sandboxResponse {
 		t.Fatalf("marshal request: %v", err)
 	}
 
-	resp, err := http.Post(baseURL+"/api/sandboxes", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("post sandbox: %v", err)
-	}
+	resp := postSandbox(t, baseURL, auth, body)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
@@ -333,11 +373,10 @@ func createSandbox(t *testing.T, baseURL string) sandboxResponse {
 	return sbx
 }
 
-func listSandboxes(t *testing.T, baseURL string) []sandboxResponse {
-	resp, err := http.Get(baseURL + "/api/sandboxes")
-	if err != nil {
-		t.Fatalf("get sandboxes: %v", err)
-	}
+func listSandboxes(t *testing.T, baseURL, auth string) []sandboxResponse {
+	t.Helper()
+
+	resp := doRequest(t, http.MethodGet, baseURL+"/api/sandboxes", auth, nil)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -352,11 +391,10 @@ func listSandboxes(t *testing.T, baseURL string) []sandboxResponse {
 	return items
 }
 
-func getSandbox(t *testing.T, baseURL, id string) sandboxResponse {
-	resp, err := http.Get(baseURL + "/api/sandboxes/" + id)
-	if err != nil {
-		t.Fatalf("get sandbox: %v", err)
-	}
+func getSandbox(t *testing.T, baseURL, auth, id string) sandboxResponse {
+	t.Helper()
+
+	resp := doRequest(t, http.MethodGet, baseURL+"/api/sandboxes/"+id, auth, nil)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
