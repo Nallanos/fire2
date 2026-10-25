@@ -38,9 +38,9 @@ func TestC1_LostCreateResponseBootsOneVM(t *testing.T) {
 // an answer, so the create job runs out of attempts. The sandbox goes to
 // cleanup_pending, the worker is asked to remove the VM, and it ends failed.
 //
-// Liveness is set out of reach: with the retries slower than its delay (a loaded
-// machine is enough), it fails the sandbox under the job's feet and the API
-// answers 201 for a failed sandbox (see docs/state-divergence.md, "constats").
+// Liveness is set out of reach: retries slower than its delay (a loaded machine
+// is enough) would make it fail the sandbox between two attempts, which is what
+// C5 checks on its own.
 func TestC2_CreateJobExhaustsItsAttemptsAfterBooting(t *testing.T) {
 	c := newCluster(t, WithLivenessTimeout(time.Hour))
 	w := c.AddWorker("w1")
@@ -93,6 +93,34 @@ func TestC3_WorkerRefusesTheCreate(t *testing.T) {
 	if hosted := w.VMs.Hosted(); len(hosted) != 0 {
 		t.Errorf("the worker hosts %v although it refused the create", hosted)
 	}
+	assertConverged(t, c, settle)
+}
+
+// C5: liveness fails a sandbox while its create job is still retrying. The
+// worker refuses every create and is slow to answer, so the sandbox sits
+// `assigned`, unlisted, for longer than the liveness delay; the reaper claims it
+// and the cleanup fails it between two attempts. The job must then end as
+// cancelled, not as completed: a completed job made the API answer 201 for a
+// failed sandbox.
+func TestC5_SandboxFailedUnderItsCreateJobIsNotReportedCreated(t *testing.T) {
+	c := newCluster(t, WithLivenessTimeout(300*time.Millisecond))
+	w := c.AddWorker("w1")
+	w.VMs.SetFull(true)
+	w.SlowCreates(time.Second)
+
+	sbx, code := c.TryCreate(0)
+	if code == http.StatusCreated {
+		t.Fatalf("create answered 201 for a sandbox that is %s: the job completed although its sandbox ended without coming up", sbx.Status)
+	}
+	if code != http.StatusBadGateway {
+		t.Errorf("create answered HTTP %d, want 502", code)
+	}
+
+	rows := c.Sandboxes()
+	if len(rows) != 1 {
+		t.Fatalf("want one sandbox row, got %d\n%s", len(rows), c.dump())
+	}
+	c.WaitStatus(rows[0].ID, settle, sandboxpkg.StatusFailed)
 	assertConverged(t, c, settle)
 }
 

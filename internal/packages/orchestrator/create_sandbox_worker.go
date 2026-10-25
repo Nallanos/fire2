@@ -86,10 +86,45 @@ func (w *CreateSandboxWorker) Work(ctx context.Context, job *river.Job[CreateSan
 		sandboxpkg.StatusFailed,
 		sandboxpkg.StatusCleanupPending,
 		sandboxpkg.StatusCleanedUp:
-		return nil // already terminal or running — idempotent no-op
+		_, err := settled(sbx)
+		return err
 	default:
 		return fmt.Errorf("unexpected sandbox status %q for sandbox %s", sbx.Status, sandboxID)
 	}
+}
+
+// settled reports whether the create job has nothing left to do for sbx: it
+// is running (nil), or it ended without coming up (a cancellation).
+//
+// A sandbox can end under its job: liveness, the TTL, a delete, a dead VM.
+// Such a job must be cancelled, not completed. A completed job tells the HTTP
+// handler the sandbox was created, and it answers 201 for a sandbox that is
+// gone. Cancelling also stops River from retrying a job that cannot succeed.
+func settled(sbx sandboxpkg.Sandbox) (bool, error) {
+	switch sbx.Status {
+	case sandboxpkg.StatusRunning:
+		return true, nil
+	case sandboxpkg.StatusStopped, sandboxpkg.StatusFailed, sandboxpkg.StatusCleanupPending, sandboxpkg.StatusCleanedUp:
+		return true, river.JobCancel(fmt.Errorf("sandbox %s ended as %s before it came up", sbx.ID, sbx.Status))
+	}
+	return false, nil
+}
+
+// movedUnder is what a step does when its guarded update changed nothing: the
+// sandbox moved since the job read it (a delete, the TTL, the creation timeout,
+// the event handler). It reads the sandbox again and reports what it became:
+// nil if it is running, a cancellation if it ended, and otherwise an error so
+// River retries the job from the sandbox's real status. Returning nil here
+// would complete the job for a sandbox that did not come up.
+func (w *CreateSandboxWorker) movedUnder(ctx context.Context, sandboxID, step string, isFinal bool, job *river.Job[CreateSandboxArgs]) error {
+	sbx, err := w.sandboxRepo.GetByID(ctx, sandboxID)
+	if err != nil {
+		return w.maybeCleanup(ctx, sandboxID, isFinal, job, err)
+	}
+	if done, err := settled(sbx); done {
+		return err
+	}
+	return w.maybeCleanup(ctx, sandboxID, isFinal, job, fmt.Errorf("sandbox %s moved to %s during %s", sandboxID, sbx.Status, step))
 }
 
 // stepScheduling transitions pending → scheduling.
@@ -99,8 +134,7 @@ func (w *CreateSandboxWorker) stepScheduling(ctx context.Context, sandboxID stri
 		return w.maybeCleanup(ctx, sandboxID, isFinal, job, fmt.Errorf("set scheduling: %w", err))
 	}
 	if n == 0 {
-		// Race: status was already advanced by a concurrent attempt — re-read and continue.
-		return nil
+		return w.movedUnder(ctx, sandboxID, "scheduling", isFinal, job)
 	}
 	// Re-enter to run the scheduling step in the same Work() call.
 	sbx, err := w.sandboxRepo.GetByID(ctx, sandboxID)
@@ -157,8 +191,8 @@ func (w *CreateSandboxWorker) stepAssign(ctx context.Context, sbx sandboxpkg.San
 		break
 	}
 	if assigned.WorkerID == nil {
-		// Guard rejected the update — status advanced concurrently, re-read.
-		return nil
+		// Guard rejected the update: the status moved since the job read it.
+		return w.movedUnder(ctx, sbx.ID, "assignment", isFinal, job)
 	}
 
 	return w.stepStartSandbox(ctx, assigned, isFinal, job)
@@ -220,17 +254,18 @@ func (w *CreateSandboxWorker) stepAcknowledge(ctx context.Context, sandboxID str
 	if err != nil {
 		return w.maybeCleanup(ctx, sandboxID, isFinal, job, err)
 	}
-	if sbx.Status == sandboxpkg.StatusRunning {
-		return nil // event handler already flipped it
-	}
-	if sbx.Status == sandboxpkg.StatusFailed {
-		return nil // container died — event handler flipped it; cleanup will be scheduled elsewhere
+	// Running: the event handler already flipped it. Ended: it died under us.
+	if done, err := settled(sbx); done {
+		return err
 	}
 
-	_, _, err = w.sandboxRepo.UpdateStatus(ctx, sandboxID, sandboxpkg.StatusRunning,
+	_, n, err := w.sandboxRepo.UpdateStatus(ctx, sandboxID, sandboxpkg.StatusRunning,
 		sandboxpkg.StatusStarting)
 	if err != nil {
 		return w.maybeCleanup(ctx, sandboxID, isFinal, job, fmt.Errorf("set running: %w", err))
+	}
+	if n == 0 {
+		return w.movedUnder(ctx, sandboxID, "acknowledgement", isFinal, job)
 	}
 	return nil
 }
