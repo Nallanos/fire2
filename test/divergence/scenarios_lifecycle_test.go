@@ -237,25 +237,33 @@ func TestD2_DuplicatedAndMisorderedEvents(t *testing.T) {
 	assertConverged(t, c, settle)
 }
 
-// D3: a sandbox stuck in scheduling with no job behind it (the create job was
-// discarded: its last attempt could not reach the database to run the
-// cleanup). Liveness only looks at sandboxes with a worker, so only the TTL can
-// end it. Measured here with a short TTL: with the default one hour, such a
-// sandbox stays "scheduling" for an hour.
-func TestD3_StuckSchedulingSandboxWaitsForItsTTL(t *testing.T) {
-	c := newCluster(t)
+// D3: sandboxes stuck in pending or scheduling with no job behind them (the
+// create job was discarded: its last attempt could not reach the database to run
+// the cleanup). Liveness only looks at sandboxes with a worker, so the TTL was
+// the only thing that could end them, and the default TTL is an hour. The
+// creation timeout fails them long before.
+func TestD3_StalledCreationIsFailedByTheCreateTimeout(t *testing.T) {
+	const createTimeout = 2 * time.Second
+	c := newCluster(t, WithCreateTimeout(createTimeout))
 	c.AddWorker("w1")
-	const ttl = 4 * time.Second
-	sbx := c.SeedSandbox(sandboxpkg.StatusScheduling, ttl)
+	stuck := []sandboxpkg.Sandbox{
+		c.SeedSandbox(sandboxpkg.StatusScheduling, time.Hour),
+		c.SeedSandbox(sandboxpkg.StatusPending, time.Hour),
+	}
 
 	start := time.Now()
-	got := c.WaitStatus(sbx.ID, settle, sandboxpkg.StatusStopped, sandboxpkg.StatusFailed)
+	for _, sbx := range stuck {
+		got := c.WaitStatus(sbx.ID, settle, sandboxpkg.StatusFailed)
+		if got.WorkerID != nil {
+			t.Errorf("sandbox is failed but still linked to worker %s", *got.WorkerID)
+		}
+	}
 	elapsed := time.Since(start)
-	t.Logf("D3: a sandbox stuck in scheduling ended %s after %s (ttl %s, liveness timeout %s)",
-		got.Status, elapsed.Round(10*time.Millisecond), ttl, livenessTimeout)
+	t.Logf("D3: stalled sandboxes failed %s after they were created (create timeout %s, TTL 1h)",
+		elapsed.Round(10*time.Millisecond), createTimeout)
 
-	if elapsed < ttl-time.Second {
-		t.Errorf("ended after %s, well before its %s TTL: something other than the TTL reaped it", elapsed, ttl)
+	if elapsed < createTimeout-500*time.Millisecond {
+		t.Errorf("failed after %s, before the %s create timeout: a creation that may still be running was reaped", elapsed, createTimeout)
 	}
 	assertConverged(t, c, settle)
 }

@@ -15,7 +15,7 @@ The `*river.Client[pgx.Tx]` is required — it is passed through to `HTTPHandler
 
 Shared by `cmd/api` and the divergence harness (`test/divergence`), so the harness tests the wiring that runs in production:
 
-- `NewRiverClient(pool, cfg, retry)` — the five River workers (create, cleanup, reap workers, reap sandbox, remove orphan), the three queues (`default`, `cleanup`, `reap_sandbox`) and the two periodic jobs, whose intervals and timeouts come from `cfg` (`ReaperInterval`, `HeartbeatTimeout`, `SandboxReaperInterval`, `SandboxLivenessTimeout`). The caller runs the River migrations and starts the client.
+- `NewRiverClient(pool, cfg, retry)` — the five River workers (create, cleanup, reap workers, reap sandbox, remove orphan), the three queues (`default`, `cleanup`, `reap_sandbox`) and the two periodic jobs, whose intervals and timeouts come from `cfg` (`ReaperInterval`, `HeartbeatTimeout`, `SandboxReaperInterval`, `SandboxLivenessTimeout`, `SandboxCreateTimeout`). The caller runs the River migrations and starts the client.
 - `NewEventServer(pool, riverClient)` — the `EventGRPCServer` with `WithTransactions` and `WithRiverClient`.
 
 ## Middleware stack (applied globally)
@@ -36,6 +36,7 @@ Loaded from environment in `ConfigFromEnv()`:
 | `REAPER_INTERVAL` | `10s` | `ReaperInterval` |
 | `SANDBOX_LIVENESS_TIMEOUT` | `15s` | `SandboxLivenessTimeout` |
 | `SANDBOX_REAPER_INTERVAL` | `1m` | `SandboxReaperInterval` |
+| `SANDBOX_CREATE_TIMEOUT` | `5m` (`0` = off) | `SandboxCreateTimeout` |
 
 ## Integration tests
 

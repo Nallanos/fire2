@@ -268,3 +268,64 @@ func TestSandboxRepository_WithTx_RoundTrip(t *testing.T) {
 		t.Fatalf("unexpected id after commit: %s", sbx2.ID)
 	}
 }
+
+// ClaimStalledCreation takes the sandboxes that have been pending or scheduling
+// for too long, and only those: a young one is still being created, and one
+// that reached a worker is liveness's business.
+func TestSandboxRepository_ClaimStalledCreation(t *testing.T) {
+	ctx := context.Background()
+	pool := testutil.SetupPostgres(t, ctx)
+	repo := NewPostgresRepository(pool)
+
+	seed := func(id string, status Status, age time.Duration) {
+		t.Helper()
+		if _, err := repo.Create(ctx, Sandbox{
+			ID: id, Runtime: "node", Status: status, Image: "node:20-alpine", Port: 3000,
+			TTL: 3600, CreatedAt: time.Now().UTC().Add(-age),
+		}); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	seed("old-pending", StatusPending, 10*time.Minute)
+	seed("old-scheduling", StatusScheduling, 10*time.Minute)
+	seed("young-scheduling", StatusScheduling, 10*time.Second)
+	seed("old-assigned", StatusAssigned, 10*time.Minute)
+	seed("old-running", StatusRunning, 10*time.Minute)
+	seed("old-failed", StatusFailed, 10*time.Minute)
+
+	got, err := repo.ClaimStalledCreation(ctx, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("ClaimStalledCreation: %v", err)
+	}
+	if len(got) != 2 || !(contains(got, "old-pending") && contains(got, "old-scheduling")) {
+		t.Fatalf("claimed %v, want old-pending and old-scheduling", got)
+	}
+	for id, want := range map[string]Status{
+		"old-pending":      StatusCleanupPending,
+		"old-scheduling":   StatusCleanupPending,
+		"young-scheduling": StatusScheduling,
+		"old-assigned":     StatusAssigned,
+		"old-running":      StatusRunning,
+		"old-failed":       StatusFailed,
+	} {
+		if sbx, _ := repo.GetByID(ctx, id); sbx.Status != want {
+			t.Errorf("%s is %s, want %s", id, sbx.Status, want)
+		}
+	}
+
+	if again, err := repo.ClaimStalledCreation(ctx, 5*time.Minute); err != nil || len(again) != 0 {
+		t.Fatalf("a second claim got %v, %v: a sandbox must be claimed once", again, err)
+	}
+	if _, err := repo.ClaimStalledCreation(ctx, 0); err == nil {
+		t.Fatalf("a zero timeout would claim every pending sandbox: want an error")
+	}
+}
+
+func contains(ids []string, id string) bool {
+	for _, got := range ids {
+		if got == id {
+			return true
+		}
+	}
+	return false
+}

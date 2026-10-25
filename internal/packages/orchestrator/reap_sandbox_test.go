@@ -33,6 +33,11 @@ type reapEnv struct {
 // newReapEnv wires a database, a fake worker gRPC server and a River client
 // running the reaper (with the given liveness timeout), cleanup and orphan workers.
 func newReapEnv(t *testing.T, ctx context.Context, liveness time.Duration) *reapEnv {
+	return newReapEnvWith(t, ctx, liveness, 0)
+}
+
+// newReapEnvWith is newReapEnv with a creation timeout too (zero turns that check off).
+func newReapEnvWith(t *testing.T, ctx context.Context, liveness, createTimeout time.Duration) *reapEnv {
 	t.Helper()
 	pool := testutil.SetupPostgres(t, ctx)
 	e := &reapEnv{
@@ -43,7 +48,7 @@ func newReapEnv(t *testing.T, ctx context.Context, liveness time.Duration) *reap
 	}
 	e.host, e.port = e.fake.StartServer(t)
 	e.river = testutil.SetupRiverClient(t, ctx, pool, func(w *river.Workers) {
-		river.AddWorker(w, NewReapSandboxWorker(e.sandboxRepo, pool, liveness))
+		river.AddWorker(w, NewReapSandboxWorker(e.sandboxRepo, pool, liveness, createTimeout))
 		river.AddWorker(w, NewCleanupSandboxWorker(e.sandboxRepo, e.workerRepo))
 		river.AddWorker(w, NewRemoveOrphanWorker(e.workerRepo))
 	})
@@ -481,4 +486,44 @@ func TestHeartbeatInventory_StatesDriveStatus(t *testing.T) {
 		t.Fatalf("second heartbeat: %v", err)
 	}
 	assertStatus(t, ctx, e.sandboxRepo, "sbx-crashed", sandboxpkg.StatusFailed)
+}
+
+// A sandbox pending or scheduling for longer than the creation timeout has no
+// worker, so liveness cannot see it, and its create job left no trace: the
+// reaper fails it (long before its TTL) and a young one is left alone.
+func TestReapSandbox_StalledCreation(t *testing.T) {
+	ctx := context.Background()
+	e := newReapEnvWith(t, ctx, 15*time.Second, time.Minute)
+	e.seed(t, ctx, "sbx-stuck-scheduling", sandboxpkg.StatusScheduling, 3600, 5*time.Minute, "")
+	e.seed(t, ctx, "sbx-stuck-pending", sandboxpkg.StatusPending, 3600, 5*time.Minute, "")
+	e.seed(t, ctx, "sbx-creating", sandboxpkg.StatusScheduling, 3600, 5*time.Second, "")
+
+	e.runReaper(t, ctx)
+
+	for _, id := range []string{"sbx-stuck-scheduling", "sbx-stuck-pending"} {
+		waitForStatus(t, ctx, e.sandboxRepo, id, sandboxpkg.StatusFailed, 10*time.Second)
+		if sbx := assertStatus(t, ctx, e.sandboxRepo, id, sandboxpkg.StatusFailed); sbx.WorkerID != nil {
+			t.Fatalf("%s kept worker link %q", id, *sbx.WorkerID)
+		}
+	}
+	assertStatus(t, ctx, e.sandboxRepo, "sbx-creating", sandboxpkg.StatusScheduling)
+}
+
+// A creation timeout of zero turns the check off, instead of failing every
+// sandbox that is still being created.
+func TestReapSandbox_StalledCreationCheckCanBeTurnedOff(t *testing.T) {
+	ctx := context.Background()
+	e := newReapEnvWith(t, ctx, 15*time.Second, 0)
+	e.seed(t, ctx, "sbx-old-scheduling", sandboxpkg.StatusScheduling, 86400, time.Hour, "")
+	e.seed(t, ctx, "sbx-expired", sandboxpkg.StatusRunning, 0, 0, "") // ttl 0: expires at once
+
+	e.runReaper(t, ctx)
+
+	// The reaper ran (the TTL-expired sandbox, seeded with ttl 0, is claimed)...
+	waitFor(t, "the reaper to run", func() bool {
+		sbx, _ := e.sandboxRepo.GetByID(ctx, "sbx-expired")
+		return sbx.Status != sandboxpkg.StatusRunning
+	})
+	// ...and left the old scheduling sandbox alone.
+	assertStatus(t, ctx, e.sandboxRepo, "sbx-old-scheduling", sandboxpkg.StatusScheduling)
 }

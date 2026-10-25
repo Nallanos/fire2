@@ -14,7 +14,7 @@ Each scenario creates a gap on purpose, lets the real mechanisms run (reapers, i
 
 Both sides run their real code. Only Firecracker is replaced, so root and KVM are not needed:
 
-- **Orchestrator**: Postgres, River jobs, gRPC server and HTTP API, wired by `internal/app` (`NewRiverClient`, `NewEventServer`) exactly as `cmd/api` does, with short delays (`cluster.go`: 2s heartbeat timeout and liveness, 200ms reapers, `FastRetryPolicy`).
+- **Orchestrator**: Postgres, River jobs, gRPC server and HTTP API, wired by `internal/app` (`NewRiverClient`, `NewEventServer`) exactly as `cmd/api` does, with short delays (`cluster.go`: 2s heartbeat timeout and liveness, 30s creation timeout, 200ms reapers, `FastRetryPolicy`).
 - **Worker**: `workerpkg.NewWorkerService`, `NewWorkerGRPCServer`, `RunHeartbeat`, `NewEventReporter`, over `FakeVMs` instead of `sandboxmgr.Manager`.
 
 ## Files
@@ -23,7 +23,7 @@ Both sides run their real code. Only Firecracker is replaced, so root and KVM ar
 |---|---|
 | `cluster.go` | `newCluster(t, opts...)` (marks the test parallel, own database), `AddWorker`, `WaitSynced`, HTTP helpers (`Create`, `TryCreate`, `DeleteSandbox`), row readers, `dump()` |
 | `fakevms.go` | `FakeVMs`: the `worker.SandboxManager` contract in memory, plus hooks on the machine (`Die`, `Adopt`, `Vanish`, `Wipe`, `SetFull`) and what happened to it (`Hosted`, `Boots`, `RemoveCalls`, `Removed`) |
-| `simworker.go` | `SimWorker`: process controls (`Crash`, `Restart`, `KillMachine`), network controls (`Partition`, `LoseCreateResponses`, `StripInventory`), `SetCapacity` |
+| `simworker.go` | `SimWorker`: process controls (`Crash`, `Restart`, `KillMachine`), network controls (`Partition`, `LoseCreateResponses`, `SlowCreates`, `StripInventory`), `SetCapacity` |
 | `legacy.go` | `LegacyWorker`: a pre-fencing worker (gRPC answers, heartbeats refused) |
 | `invariants.go` | `eventually`, `divergences`, `assertConverged`, `assertStable`, `gap` |
 | `scenarios_*_test.go` | A (worker lost or cut off), B (restarts and tokens), C+D (creations, deletions, drift), E (capacity) |
@@ -31,7 +31,7 @@ Both sides run their real code. Only Firecracker is replaced, so root and KVM ar
 ## Conventions
 
 - Test names start with the scenario ID (`TestB4_...`): `-run TestB4`.
-- A scenario that checks one mechanism disables the competing one (`WithLivenessTimeout(time.Hour)`) so a green result cannot come from the wrong path.
+- A scenario that checks one mechanism disables the competing one (`WithLivenessTimeout(time.Hour)`; `WithCreateTimeout` for D3) so a green result cannot come from the wrong path.
 - A scenario that reveals a hole **stays red**, no `t.Skip`: it fails through `gap(t, "B4", expected, observed)`, which points at `docs/state-divergence.md#b4`. Fixing the hole turns it green; that is the check that the fix works.
 - `SimWorker`'s gRPC `GetWorkerInfo` reports zero CPU and memory usage: the host's load must not decide whether the scheduler finds a worker "full".
 - `SimWorker.SetCapacity(n)` goes through the real budget computation (`cpu=n`, memory for `n` sandboxes); `AddWorker` asserts the orchestrator ends up with that capacity, so a change to the per-sandbox memory footprint in `worker/monitoring.go` fails loudly (update `sandboxMemMiB` in `simworker.go`).
