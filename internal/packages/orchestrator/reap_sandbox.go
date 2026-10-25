@@ -23,10 +23,14 @@ type ReapSandboxArgs struct{}
 func (ReapSandboxArgs) Kind() string { return "reap_sandbox" }
 
 // ReapSandboxWorker claims sandboxes that must be torn down and enqueues their
-// cleanup. Two causes:
+// cleanup. Three causes:
 //   - TTL: created_at + ttl (seconds) has passed → cleanup ends in stopped.
-//   - Liveness: the hosting worker has not listed the sandbox in a heartbeat
-//     inventory for longer than livenessTimeout → cleanup ends in failed.
+//   - Liveness: the hosting worker no longer vouches for the sandbox → cleanup
+//     ends in failed. Either the worker heartbeats but has not listed it for
+//     longer than livenessTimeout, or the worker has been inactive for longer
+//     than workerLostTimeout. Liveness is measured against the worker's own
+//     heartbeats, never the orchestrator's clock: an orchestrator that was down
+//     or cut off from every worker fails nothing before workerLostTimeout.
 //   - Stalled creation: the sandbox has been pending or scheduling for longer
 //     than createTimeout → cleanup ends in failed. It has no worker, so
 //     liveness cannot see it, and only its TTL would end it otherwise. A
@@ -37,14 +41,18 @@ func (ReapSandboxArgs) Kind() string { return "reap_sandbox" }
 // and a crash between the two steps cannot strand a claimed sandbox.
 type ReapSandboxWorker struct {
 	river.WorkerDefaults[ReapSandboxArgs]
-	pool            *pgxpool.Pool
-	sandboxRepo     sandboxpkg.Repository
-	livenessTimeout time.Duration
-	createTimeout   time.Duration
+	pool              *pgxpool.Pool
+	sandboxRepo       sandboxpkg.Repository
+	livenessTimeout   time.Duration
+	workerLostTimeout time.Duration
+	createTimeout     time.Duration
 }
 
-func NewReapSandboxWorker(sandboxRepo sandboxpkg.Repository, pool *pgxpool.Pool, livenessTimeout, createTimeout time.Duration) *ReapSandboxWorker {
-	return &ReapSandboxWorker{sandboxRepo: sandboxRepo, pool: pool, livenessTimeout: livenessTimeout, createTimeout: createTimeout}
+func NewReapSandboxWorker(sandboxRepo sandboxpkg.Repository, pool *pgxpool.Pool, livenessTimeout, workerLostTimeout, createTimeout time.Duration) *ReapSandboxWorker {
+	return &ReapSandboxWorker{
+		sandboxRepo: sandboxRepo, pool: pool,
+		livenessTimeout: livenessTimeout, workerLostTimeout: workerLostTimeout, createTimeout: createTimeout,
+	}
 }
 
 func (w *ReapSandboxWorker) Work(ctx context.Context, job *river.Job[ReapSandboxArgs]) error {
@@ -60,7 +68,7 @@ func (w *ReapSandboxWorker) Work(ctx context.Context, job *river.Job[ReapSandbox
 	if err != nil {
 		return fmt.Errorf("reap sandbox: claim ttl-expired: %w", err)
 	}
-	dead, err := repo.ClaimLivenessExpired(ctx, w.livenessTimeout)
+	dead, err := repo.ClaimLivenessExpired(ctx, w.livenessTimeout, w.workerLostTimeout)
 	if err != nil {
 		return fmt.Errorf("reap sandbox: claim liveness-expired: %w", err)
 	}

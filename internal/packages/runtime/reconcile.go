@@ -25,6 +25,21 @@ func IsSandboxID(name string) bool {
 	return err == nil && len(name) == 36
 }
 
+// ErrInvalidSandboxID is returned for an ID that is not a sandbox ID (a UUID).
+// A sandbox ID becomes a path under the base dir, which the worker, running as
+// root, creates and later removes recursively: an ID such as "../../etc" must
+// never get that far.
+var ErrInvalidSandboxID = errors.New("invalid sandbox id")
+
+// CheckSandboxID returns nil if id is shaped like a sandbox ID (see
+// IsSandboxID), and an error wrapping ErrInvalidSandboxID otherwise.
+func CheckSandboxID(id string) error {
+	if !IsSandboxID(id) {
+		return fmt.Errorf("%w: %q", ErrInvalidSandboxID, id)
+	}
+	return nil
+}
+
 // ListSandboxDirs returns the sandbox IDs that have a directory under baseDir.
 func ListSandboxDirs(baseDir string) ([]string, error) {
 	entries, err := os.ReadDir(baseDir)

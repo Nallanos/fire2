@@ -26,7 +26,7 @@ func NewRiverClient(pool *pgxpool.Pool, cfg Config, retry river.ClientRetryPolic
 	river.AddWorker(workers, orchestrator.NewCreateSandboxWorker(pool, sandboxRepo, workerRepo))
 	river.AddWorker(workers, orchestrator.NewCleanupSandboxWorker(sandboxRepo, workerRepo))
 	river.AddWorker(workers, orchestrator.NewReapWorkersWorker(workerRepo, cfg.HeartbeatTimeout))
-	river.AddWorker(workers, orchestrator.NewReapSandboxWorker(sandboxRepo, pool, cfg.SandboxLivenessTimeout, cfg.SandboxCreateTimeout))
+	river.AddWorker(workers, orchestrator.NewReapSandboxWorker(sandboxRepo, pool, cfg.SandboxLivenessTimeout, cfg.SandboxWorkerLostTimeout, cfg.SandboxCreateTimeout))
 	river.AddWorker(workers, orchestrator.NewRemoveOrphanWorker(workerRepo))
 
 	return river.NewClient(riverpgxv5.New(pool), &river.Config{
@@ -38,6 +38,9 @@ func NewRiverClient(pool *pgxpool.Pool, cfg Config, retry river.ClientRetryPolic
 		Workers:     workers,
 		MaxAttempts: 5,
 		RetryPolicy: retry,
+		// Explicit, not River's default: it must cover an attempt of the create
+		// job (see orchestrator.JobTimeout).
+		JobTimeout: orchestrator.JobTimeout,
 		PeriodicJobs: []*river.PeriodicJob{
 			river.NewPeriodicJob(
 				river.PeriodicInterval(cfg.ReaperInterval),

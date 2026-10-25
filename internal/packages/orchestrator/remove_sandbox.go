@@ -16,7 +16,14 @@ import (
 // the sandbox (gRPC NotFound) counts as confirmation; every other failure —
 // unknown worker, unreachable worker, remove error — is returned so the caller
 // can keep its state and let River retry.
+//
+// The whole call is bounded by removeSandboxCallTimeout: a worker that drops
+// packets instead of refusing them would otherwise hold the job until River's
+// own timeout. A removal that timed out is not confirmed, and is retried.
 func removeSandboxOnWorker(ctx context.Context, workerRepo workerpkg.Repository, workerID, sandboxID string) error {
+	ctx, cancel := context.WithTimeout(ctx, removeSandboxCallTimeout)
+	defer cancel()
+
 	worker, err := workerRepo.Get(ctx, workerID)
 	if err != nil {
 		return fmt.Errorf("get worker %s: %w", workerID, err)

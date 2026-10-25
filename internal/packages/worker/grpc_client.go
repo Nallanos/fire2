@@ -10,6 +10,7 @@ import (
 	"time"
 
 	workerv1 "github/nallanos/fire2/gen/worker/v1"
+	runtimeClient "github/nallanos/fire2/internal/packages/runtime"
 	"github/nallanos/fire2/internal/packages/sandboxmgr"
 
 	"google.golang.org/grpc"
@@ -29,8 +30,25 @@ func NewWorkerGRPCServer(service *WorkerService) *WorkerGRPCServer {
 	return &WorkerGRPCServer{service: service}
 }
 
+// checkSandboxID refuses an ID that is not a sandbox ID (a UUID). The worker
+// runs as root and its gRPC API is not authenticated (only bound to a private
+// address): the ID becomes a path it creates and removes recursively, so
+// "../../etc" must be turned away at the door.
+func checkSandboxID(id string) error {
+	if err := runtimeClient.CheckSandboxID(id); err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+	return nil
+}
+
 // Implement gRPC server methods
 func (s *WorkerGRPCServer) CreateSandbox(ctx context.Context, req *workerv1.CreateSandboxRequest) (*workerv1.CreateSandboxResponse, error) {
+	if err := checkSandboxID(req.GetId()); err != nil {
+		return nil, err
+	}
+	if err := CheckSandboxSize(req.GetVcpuCount(), req.GetMemSizeMib()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 	if err := s.service.CreateSandbox(ctx, CreateSandboxInput{
 		ID:         req.GetId(),
 		Runtime:    req.GetRuntime(),
@@ -48,6 +66,9 @@ func (s *WorkerGRPCServer) CreateSandbox(ctx context.Context, req *workerv1.Crea
 }
 
 func (s *WorkerGRPCServer) StopSandbox(ctx context.Context, req *workerv1.StopSandboxRequest) (*workerv1.StopSandboxResponse, error) {
+	if err := checkSandboxID(req.GetContainerId()); err != nil {
+		return nil, err
+	}
 	if err := s.service.StopSandbox(req.GetContainerId()); err != nil {
 		return nil, sandboxError(err)
 	}
@@ -56,6 +77,9 @@ func (s *WorkerGRPCServer) StopSandbox(ctx context.Context, req *workerv1.StopSa
 }
 
 func (s *WorkerGRPCServer) RemoveSandbox(ctx context.Context, req *workerv1.RemoveSandboxRequest) (*workerv1.RemoveSandboxResponse, error) {
+	if err := checkSandboxID(req.GetContainerId()); err != nil {
+		return nil, err
+	}
 	if err := s.service.RemoveSandbox(ctx, req.GetContainerId()); err != nil {
 		return nil, sandboxError(err)
 	}
@@ -73,6 +97,8 @@ func sandboxError(err error) error {
 		return status.Error(codes.Unavailable, err.Error())
 	case errors.Is(err, sandboxmgr.ErrAtCapacity):
 		return status.Error(codes.ResourceExhausted, err.Error())
+	case errors.Is(err, runtimeClient.ErrInvalidSandboxID):
+		return status.Error(codes.InvalidArgument, err.Error())
 	default:
 		return err
 	}

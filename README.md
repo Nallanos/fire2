@@ -44,7 +44,13 @@ The HTTP call subscribes to River completion events before inserting, so it retu
 
 - Workers send heartbeats to the API over gRPC. A periodic **reaper** job demotes workers
   whose heartbeat went stale, so they stop receiving sandboxes; a worker that comes back
-  re-registers on its next heartbeat.
+  re-registers on its next heartbeat. A worker the database no longer knows (row lost,
+  backup restored) is told so and registers again by itself.
+- A sandbox is failed and cleaned up when its worker keeps heartbeating without listing
+  it (`SANDBOX_LIVENESS_TIMEOUT`, 15 s), or when its worker stays inactive for
+  `SANDBOX_WORKER_LOST_TIMEOUT` (2 min). Liveness is measured on the worker's heartbeats,
+  not on the API's own uptime: an API restart or a database outage shorter than that
+  costs no sandbox.
 - On startup, a worker **reaps orphaned VMs** left behind by a crash (leftover sandbox
   directories and Firecracker processes).
 - Workers never touch the database: everything goes through the API.
@@ -81,7 +87,7 @@ POST /api/sandboxes
 { "runtime": "node", "ttl": 3600, "vcpu_count": 1, "mem_size_mib": 256 }
 ```
 
-`runtime` is required; `ttl` defaults to 3600 s, `vcpu_count` to 1, `mem_size_mib` to 256.
+`runtime` is required; `ttl` defaults to 3600 s, `vcpu_count` to 1, `mem_size_mib` to 256. Those defaults are also the maximum: a worker counts its capacity in sandboxes of that size, so a larger `vcpu_count` or `mem_size_mib` is refused with `400`.
 
 ## Project status
 
@@ -109,6 +115,7 @@ make sandbox-smoke     # smoke-test the endpoints
 | `PORT` | API | HTTP port |
 | `ORCHESTRATOR_GRPC_PORT` · `ORCHESTRATOR_GRPC_BIND_HOST` | API | gRPC receiver |
 | `HEARTBEAT_TIMEOUT` · `REAPER_INTERVAL` | API | worker liveness |
+| `SANDBOX_LIVENESS_TIMEOUT` · `SANDBOX_WORKER_LOST_TIMEOUT` | API | when a sandbox is failed for its worker's sake |
 | `ORCHESTRATOR_GRPC_ADDR` | worker | where to reach the API |
 | `WORKER_ID` · `WORKER_PORT` · `WORKER_GRPC_BIND_HOST` · `WORKER_ADVERTISED_HOST` | worker | identity and gRPC listener |
 | `WORKER_CPU_BUDGET` · `WORKER_MEM_BUDGET` | worker | capacity |

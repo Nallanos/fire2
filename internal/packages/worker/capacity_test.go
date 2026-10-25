@@ -1,6 +1,9 @@
 package worker
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestComputeCapacity(t *testing.T) {
 	t.Setenv("WORKER_MAX_SANDBOXES", "")
@@ -38,5 +41,28 @@ func TestComputeCapacity_EnvOverrideNeverExceedsBudget(t *testing.T) {
 	t.Setenv("WORKER_MAX_SANDBOXES", "50")
 	if got := computeCapacity(2, 8192); got != 2 {
 		t.Fatalf("override above budget must be capped: got %d, want 2", got)
+	}
+}
+
+// Capacity counts slots of SandboxVcpu / SandboxMemMiB, so a sandbox may not be
+// larger than one. Unset (zero) sizes are the caller's defaults to apply.
+func TestCheckSandboxSize(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		vcpu, memMiB int32
+		tooLarge     bool
+	}{
+		{"unset", 0, 0, false},
+		{"exactly one slot", SandboxVcpu, SandboxMemMiB, false},
+		{"smaller", 1, 128, false},
+		{"one MiB over", SandboxVcpu, SandboxMemMiB + 1, true},
+		{"two vCPUs", SandboxVcpu + 1, SandboxMemMiB, true},
+		{"4 GiB", SandboxVcpu, 4096, true},
+		{"both over", 8, 8192, true},
+	} {
+		err := CheckSandboxSize(tt.vcpu, tt.memMiB)
+		if tt.tooLarge != errors.Is(err, ErrSandboxTooLarge) || (!tt.tooLarge && err != nil) {
+			t.Errorf("%s: CheckSandboxSize(%d, %d) = %v, want too large = %t", tt.name, tt.vcpu, tt.memMiB, err, tt.tooLarge)
+		}
 	}
 }

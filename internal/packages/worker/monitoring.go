@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	orchestratorv1 "github/nallanos/fire2/gen/orchestrator/v1"
 )
@@ -32,10 +36,15 @@ func detectWorkerAddress() (string, error) {
 }
 
 // Per-sandbox footprint used to size a worker. The guest matches the sandbox
-// defaults (migration 007: 1 vCPU / 256 MiB).
+// defaults (migration 007: 1 vCPU / 256 MiB). A worker counts its capacity in
+// these slots, so a sandbox may not be larger than one (CheckSandboxSize): the
+// orchestrator takes its defaults and its limit from SandboxVcpu and
+// SandboxMemMiB, and there is no other source.
 const (
-	sandboxVcpu   = 1
-	sandboxMemMiB = 256
+	// SandboxVcpu is the vCPU count of one sandbox slot.
+	SandboxVcpu = 1
+	// SandboxMemMiB is the guest memory, in MiB, of one sandbox slot.
+	SandboxMemMiB = 256
 	// sandboxOverheadMiB is what each microVM costs on top of its guest
 	// memory: the Firecracker process, its KVM structures and devices. An idle
 	// 256 MiB guest was measured at 176 MiB resident, and grows to its full
@@ -48,12 +57,31 @@ const (
 	memReserveMiB = 384
 )
 
+// ErrSandboxTooLarge is returned for a sandbox bigger than one slot.
+var ErrSandboxTooLarge = errors.New("sandbox is larger than a worker slot")
+
+// CheckSandboxSize refuses a vCPU count or a memory size above one slot
+// (SandboxVcpu, SandboxMemMiB). Capacity counts sandboxes, not resources: a
+// 4 GiB sandbox would count for one slot on a worker of 1 GiB without swap,
+// which is the OOM that computeCapacity sizes the fleet to avoid. Zero or
+// negative values mean "not set" and are the caller's defaults to apply, so
+// they pass. Lift this check together with the capacity model, not before.
+func CheckSandboxSize(vcpuCount, memSizeMiB int32) error {
+	if vcpuCount > SandboxVcpu {
+		return fmt.Errorf("%w: vcpu_count %d, at most %d", ErrSandboxTooLarge, vcpuCount, SandboxVcpu)
+	}
+	if memSizeMiB > SandboxMemMiB {
+		return fmt.Errorf("%w: mem_size_mib %d, at most %d", ErrSandboxTooLarge, memSizeMiB, SandboxMemMiB)
+	}
+	return nil
+}
+
 // computeCapacity returns how many sandboxes a worker can host: the scarcer of
 // CPU and memory decides. WORKER_MAX_SANDBOXES, when set to a positive value,
 // overrides the computation but never exceeds what the budgets allow.
 func computeCapacity(cpuBudget, memBudgetMiB int) int {
-	byCPU := cpuBudget / sandboxVcpu
-	byMem := (memBudgetMiB - memReserveMiB) / (sandboxMemMiB + sandboxOverheadMiB)
+	byCPU := cpuBudget / SandboxVcpu
+	byMem := (memBudgetMiB - memReserveMiB) / (SandboxMemMiB + sandboxOverheadMiB)
 	capacity := min(byCPU, byMem)
 	if capacity < 0 {
 		capacity = 0
@@ -202,7 +230,9 @@ func (w *WorkerService) UpdateWorker(ctx context.Context) (string, error) {
 		MemUsage:     int32(snap.mem_usage),
 		FencingToken: snap.FencingToken,
 	}
-	if heartbeat.FencingToken == 0 {
+	if w.needsRegister {
+		// The heartbeat still carries the token this process held, if any: the
+		// orchestrator hands out one above it.
 		registration, err := w.orchestratorClient.RegisterWorker(ctx, heartbeat)
 		if err != nil {
 			return "", err
@@ -214,6 +244,7 @@ func (w *WorkerService) UpdateWorker(ctx context.Context) (string, error) {
 		w.mu.Lock()
 		w.worker.FencingToken = heartbeat.FencingToken
 		w.mu.Unlock()
+		w.needsRegister = false
 	}
 
 	heartbeat.Sandboxes = w.sandboxes.Snapshot()
@@ -221,6 +252,14 @@ func (w *WorkerService) UpdateWorker(ctx context.Context) (string, error) {
 
 	_, err = w.orchestratorClient.ReportWorkerHeartbeat(ctx, heartbeat)
 	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			// The orchestrator's database does not know this worker or its token
+			// (row deleted, restored from an older backup): this process is
+			// not an old one, so register again at the next heartbeat. An old
+			// process is refused with FailedPrecondition, which is final.
+			slog.Warn("orchestrator does not know this worker, registering again", "worker_id", snap.ID, "fencing_token", heartbeat.FencingToken)
+			w.needsRegister = true
+		}
 		return "", err
 	}
 

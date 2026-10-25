@@ -3,10 +3,13 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"syscall"
 	"testing"
@@ -151,5 +154,41 @@ func TestSpawnFailsOnABadConfig(t *testing.T) {
 	defer cancel()
 	if err := c.Wait(ctx); err == nil || err.Error() != "firecracker exited with code 3" {
 		t.Fatalf("Wait = %v, want firecracker's exit code", err)
+	}
+}
+
+// The sandbox ID becomes a path the worker creates and removes recursively as
+// root. NewClient and Attach turn away anything that is not a sandbox ID
+// before touching the disk.
+func TestNewClientAndAttachRefuseAPathAsAnID(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "a", "b")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(sandboxDirEnv, base)
+
+	for _, id := range []string{"../../escaped", "../escaped", "..", ".", "/etc", "a/b", "", "sbx-1"} {
+		if c, err := NewClient(id); !errors.Is(err, ErrInvalidSandboxID) || c != nil {
+			t.Errorf("NewClient(%q) = %v, %v, want ErrInvalidSandboxID", id, c, err)
+		}
+		if c, err := Attach(id); !errors.Is(err, ErrInvalidSandboxID) || c != nil {
+			t.Errorf("Attach(%q) = %v, %v, want ErrInvalidSandboxID", id, c, err)
+		}
+	}
+
+	var found []string
+	_ = filepath.WalkDir(root, func(path string, _ fs.DirEntry, err error) error {
+		if err == nil && path != root {
+			found = append(found, path)
+		}
+		return nil
+	})
+	if len(found) != 2 {
+		t.Errorf("files under %s = %v, want only a and a/b: a refused ID created something", root, found)
+	}
+
+	if err := CheckSandboxID("6f1c2a52-58a4-4f4e-9a5f-0d1d2f6b7c01"); err != nil {
+		t.Errorf("CheckSandboxID(uuid) = %v", err)
 	}
 }

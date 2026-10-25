@@ -459,7 +459,9 @@ func TestHeartbeat_MissingToken_ReturnsInvalidArgument(t *testing.T) {
 	}
 }
 
-func TestHeartbeat_UnregisteredWorker_ReturnsFailedPrecondition(t *testing.T) {
+// A worker the database has no row for is told to register again (NotFound),
+// not refused for good: it is the database that is late.
+func TestHeartbeat_UnregisteredWorker_ReturnsNotFound(t *testing.T) {
 	ctx := context.Background()
 	pool := testutil.SetupPostgres(t, ctx)
 	workerRepo := workerpkg.NewPostgresRepository(pool)
@@ -470,11 +472,73 @@ func TestHeartbeat_UnregisteredWorker_ReturnsFailedPrecondition(t *testing.T) {
 	_, err := srv.ReportWorkerHeartbeat(ctx, &orchestratorv1.WorkerHeartbeat{
 		WorkerId: "wk-unregistered", FencingToken: 1,
 	})
-	if status.Code(err) != codes.FailedPrecondition {
-		t.Fatalf("want FailedPrecondition for unregistered worker, got %v", err)
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("want NotFound for unregistered worker, got %v", err)
 	}
 	if _, err := workerRepo.Get(ctx, "wk-unregistered"); !errors.Is(err, workerpkg.ErrNotFound) {
 		t.Fatalf("unregistered heartbeat unexpectedly created worker: %v", err)
+	}
+
+	// It registers again, presenting the token it held: the new one is above it.
+	registration, err := srv.RegisterWorker(ctx, &orchestratorv1.WorkerHeartbeat{
+		WorkerId: "wk-unregistered", Status: "active", Address: "10.0.0.2", Port: 50051, Capacity: 4, FencingToken: 1,
+	})
+	if err != nil {
+		t.Fatalf("RegisterWorker: %v", err)
+	}
+	if registration.GetFencingToken() != 2 {
+		t.Fatalf("registration presenting token 1: want token 2, got %d", registration.GetFencingToken())
+	}
+	if _, err := srv.ReportWorkerHeartbeat(ctx, &orchestratorv1.WorkerHeartbeat{
+		WorkerId: "wk-unregistered", FencingToken: registration.GetFencingToken(), Status: "active",
+	}); err != nil {
+		t.Fatalf("heartbeat after registering again: %v", err)
+	}
+}
+
+// A database whose token fell behind the worker's (restored from an older
+// backup) says NotFound, so the worker registers again; a token behind the
+// database's is an older process, FailedPrecondition, final. Same for an
+// older process once the worker has registered again.
+func TestHeartbeat_DatabaseBehindTheWorker_ReturnsNotFound(t *testing.T) {
+	ctx := context.Background()
+	pool := testutil.SetupPostgres(t, ctx)
+	workerRepo := workerpkg.NewPostgresRepository(pool)
+	srv := NewEventGRPCServer(
+		sandboxpkg.NewPostgresRepository(pool), NewEventRepository(pool), workerRepo,
+	)
+
+	token := registerWorker(t, ctx, srv, "wk-restored")
+	beat := func(token int64) error {
+		_, err := srv.ReportWorkerHeartbeat(ctx, &orchestratorv1.WorkerHeartbeat{WorkerId: "wk-restored", FencingToken: token, Status: "active"})
+		return err
+	}
+	if err := beat(token); err != nil {
+		t.Fatalf("heartbeat with the current token: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE worker SET fencing_token = 0 WHERE id = 'wk-restored'`); err != nil {
+		t.Fatalf("lose the token: %v", err)
+	}
+	if err := beat(token); status.Code(err) != codes.NotFound {
+		t.Fatalf("token lost by the database: want NotFound, got %v", err)
+	}
+
+	registration, err := srv.RegisterWorker(ctx, &orchestratorv1.WorkerHeartbeat{
+		WorkerId: "wk-restored", Status: "active", Address: "10.0.0.2", Port: 50051, Capacity: 4, FencingToken: token,
+	})
+	if err != nil {
+		t.Fatalf("RegisterWorker: %v", err)
+	}
+	if registration.GetFencingToken() <= token {
+		t.Fatalf("new token %d must be above the one the worker held (%d)", registration.GetFencingToken(), token)
+	}
+	if err := beat(registration.GetFencingToken()); err != nil {
+		t.Fatalf("heartbeat after registering again: %v", err)
+	}
+	// The process that held the old token is now an older process.
+	if err := beat(token); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("old token after the worker registered again: want FailedPrecondition, got %v", err)
 	}
 }
 

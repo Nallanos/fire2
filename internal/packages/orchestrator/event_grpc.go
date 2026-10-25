@@ -117,7 +117,10 @@ func (s *EventGRPCServer) IngestSandboxEvent(ctx context.Context, req *orchestra
 }
 
 // RegisterWorker starts a new worker incarnation and returns its fencing token.
-// The worker must include this token in all subsequent heartbeats.
+// The worker must include this token in all subsequent heartbeats. The request's
+// fencing_token is the last one the process held (0 at startup): the new token
+// is above it and above the persisted one, so a database that lost its tokens
+// never hands out one a previous process held.
 func (s *EventGRPCServer) RegisterWorker(ctx context.Context, req *orchestratorv1.WorkerHeartbeat) (*orchestratorv1.WorkerRegistration, error) {
 	if req == nil || strings.TrimSpace(req.GetWorkerId()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "worker_id is required")
@@ -163,9 +166,15 @@ func (s *EventGRPCServer) ReportWorkerHeartbeat(ctx context.Context, req *orches
 	return &emptypb.Empty{}, nil
 }
 
+// heartbeatError maps a refused heartbeat to the code the worker acts on:
+// FailedPrecondition is final (an older process, never to register again),
+// NotFound means "register again" (the database lost this worker's token).
 func heartbeatError(err error) error {
 	if errors.Is(err, workerpkg.ErrFenced) {
 		return status.Error(codes.FailedPrecondition, "worker fencing token is stale")
+	}
+	if errors.Is(err, workerpkg.ErrWorkerUnknown) {
+		return status.Error(codes.NotFound, "worker unknown, register again")
 	}
 	return status.Errorf(codes.Internal, "heartbeat: %v", err)
 }

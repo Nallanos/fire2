@@ -13,6 +13,7 @@ func NewWorkerService(orchestratorClient orchestratorv1.OrchestratorServiceClien
 	return &WorkerService{
 		orchestratorClient: orchestratorClient,
 		sandboxes:          sandboxes,
+		needsRegister:      true,
 	}
 }
 

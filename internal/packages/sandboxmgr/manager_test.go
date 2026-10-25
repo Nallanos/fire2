@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	runtimeClient "github/nallanos/fire2/internal/packages/runtime"
 )
 
 type fakeVM struct {
@@ -345,6 +347,26 @@ func TestUnknownSandbox(t *testing.T) {
 	}
 	if err := h.m.Remove(sbx); !errors.Is(err, ErrSandboxNotFound) {
 		t.Fatalf("Remove = %v, want ErrSandboxNotFound", err)
+	}
+}
+
+// A sandbox ID names directories the worker creates and removes recursively as
+// root: one that is not a UUID never reaches a Service, a VM or the disk.
+func TestInvalidIDsNeverReachTheDisk(t *testing.T) {
+	h := newHarness(t, runningVM)
+	for _, id := range []string{"../../etc", "..", "/", "a/b", "", "sbx-1"} {
+		if err := h.m.Create(CreateInput{ID: id}); !errors.Is(err, runtimeClient.ErrInvalidSandboxID) {
+			t.Errorf("Create(%q) = %v, want ErrInvalidSandboxID", id, err)
+		}
+		if err := h.m.Remove(id); !errors.Is(err, runtimeClient.ErrInvalidSandboxID) {
+			t.Errorf("Remove(%q) = %v, want ErrInvalidSandboxID", id, err)
+		}
+	}
+	h.mu.Lock()
+	built := len(h.vms)
+	h.mu.Unlock()
+	if built != 0 || len(h.m.Snapshot()) != 0 || len(h.reapedIDs()) != 0 {
+		t.Errorf("refused IDs reached the manager: %d VM(s) built, %d tracked, %v reaped", built, len(h.m.Snapshot()), h.reapedIDs())
 	}
 }
 

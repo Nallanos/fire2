@@ -26,6 +26,34 @@ type CreateSandboxArgs struct {
 
 func (CreateSandboxArgs) Kind() string { return "create_sandbox" }
 
+// Bounds on the orchestrator's calls to a worker. A worker the network drops
+// packets to (not one that refuses the connection) would otherwise hold the job
+// until River's own timeout, and keep a HTTP caller waiting.
+const (
+	// candidatesTimeout bounds all the GetWorkerInfo calls of one scheduling
+	// step (buildCandidates).
+	candidatesTimeout = 5 * time.Second
+	// defaultCreateSandboxCallTimeout bounds one CreateSandbox call. The worker
+	// bounds the boot to 30s itself (sandboxmgr bootTimeout), then answers.
+	defaultCreateSandboxCallTimeout = 45 * time.Second
+	// defaultRemoveSandboxCallTimeout bounds one removal, from the database
+	// read of the worker to the worker's answer. Removing includes stopping the
+	// VM (3s of grace, then a kill) and the device-mapper EBUSY retries, up to 5s.
+	defaultRemoveSandboxCallTimeout = 15 * time.Second
+
+	// JobTimeout is what a River job gets (river.Config.JobTimeout): the slowest
+	// attempt of the create job, a scheduling step then a CreateSandbox call,
+	// plus room for its database round trips. Left to River's default (1m) the
+	// room would be 10s, one slow query from a job cancelled mid-call.
+	JobTimeout = candidatesTimeout + defaultCreateSandboxCallTimeout + 30*time.Second
+)
+
+// Variables so a test does not wait the real delays.
+var (
+	createSandboxCallTimeout = defaultCreateSandboxCallTimeout
+	removeSandboxCallTimeout = defaultRemoveSandboxCallTimeout
+)
+
 // CleanupSandboxArgs are the arguments for the cleanup river job.
 type CleanupSandboxArgs struct {
 	SandboxID string `json:"sandbox_id"`
@@ -220,7 +248,9 @@ func (w *CreateSandboxWorker) stepStartSandbox(ctx context.Context, sbx sandboxp
 	}
 	defer client.Close()
 
-	_, grpcErr := client.CreateSandbox(ctx, &workerv1.CreateSandboxRequest{
+	callCtx, cancel := context.WithTimeout(ctx, createSandboxCallTimeout)
+	defer cancel()
+	_, grpcErr := client.CreateSandbox(callCtx, &workerv1.CreateSandboxRequest{
 		Id:         sbx.ID,
 		Runtime:    sbx.Runtime,
 		Image:      sbx.Image,
@@ -310,7 +340,7 @@ func (w *CreateSandboxWorker) maybeCleanup(ctx context.Context, sandboxID string
 
 // buildCandidates contacts each worker via gRPC to fetch current load info.
 func buildCandidates(ctx context.Context, workers []workerpkg.Worker) []WorkerCandidate {
-	gctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	gctx, cancel := context.WithTimeout(ctx, candidatesTimeout)
 	defer cancel()
 
 	candidates := make([]WorkerCandidate, 0, len(workers))

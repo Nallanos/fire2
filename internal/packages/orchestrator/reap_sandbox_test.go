@@ -31,13 +31,20 @@ type reapEnv struct {
 }
 
 // newReapEnv wires a database, a fake worker gRPC server and a River client
-// running the reaper (with the given liveness timeout), cleanup and orphan workers.
+// running the reaper (with the given liveness timeout), cleanup and orphan
+// workers. A worker is never lost: a test of the other causes must not see a
+// sandbox failed for its worker's inactivity.
 func newReapEnv(t *testing.T, ctx context.Context, liveness time.Duration) *reapEnv {
-	return newReapEnvWith(t, ctx, liveness, 0)
+	return newReapEnvAll(t, ctx, liveness, time.Hour, 0)
 }
 
 // newReapEnvWith is newReapEnv with a creation timeout too (zero turns that check off).
 func newReapEnvWith(t *testing.T, ctx context.Context, liveness, createTimeout time.Duration) *reapEnv {
+	return newReapEnvAll(t, ctx, liveness, time.Hour, createTimeout)
+}
+
+// newReapEnvAll sets every timeout of the reaper.
+func newReapEnvAll(t *testing.T, ctx context.Context, liveness, workerLost, createTimeout time.Duration) *reapEnv {
 	t.Helper()
 	pool := testutil.SetupPostgres(t, ctx)
 	e := &reapEnv{
@@ -48,7 +55,7 @@ func newReapEnvWith(t *testing.T, ctx context.Context, liveness, createTimeout t
 	}
 	e.host, e.port = e.fake.StartServer(t)
 	e.river = testutil.SetupRiverClient(t, ctx, pool, func(w *river.Workers) {
-		river.AddWorker(w, NewReapSandboxWorker(e.sandboxRepo, pool, liveness, createTimeout))
+		river.AddWorker(w, NewReapSandboxWorker(e.sandboxRepo, pool, liveness, workerLost, createTimeout))
 		river.AddWorker(w, NewCleanupSandboxWorker(e.sandboxRepo, e.workerRepo))
 		river.AddWorker(w, NewRemoveOrphanWorker(e.workerRepo))
 	})
@@ -101,6 +108,15 @@ func (e *reapEnv) lastSeenAge(t *testing.T, ctx context.Context, id string) time
 		t.Fatalf("read last_seen_at %s: %v", id, err)
 	}
 	return time.Duration(secs * float64(time.Second))
+}
+
+// setRegisteredAt moves a worker's registration back: registerWorker registers
+// it now, as a process that has just started.
+func (e *reapEnv) setRegisteredAt(t *testing.T, ctx context.Context, workerID string, ago time.Duration) {
+	t.Helper()
+	if _, err := e.pool.Exec(ctx, `UPDATE worker SET registered_at = now() - make_interval(secs => $2) WHERE id = $1`, workerID, ago.Seconds()); err != nil {
+		t.Fatalf("set registered_at %s: %v", workerID, err)
+	}
 }
 
 func (e *reapEnv) runReaper(t *testing.T, ctx context.Context) {
@@ -386,16 +402,65 @@ func TestHeartbeatInventory_TokenChangeAndStaleToken(t *testing.T) {
 	assertStatus(t, ctx, e.sandboxRepo, "sbx-ev", sandboxpkg.StatusRunning)
 }
 
+// A worker whose token the database lost is told to register again (NotFound)
+// on an inventory heartbeat too: the transaction is rolled back, so its
+// sandboxes are neither refreshed nor failed, and once it has registered again
+// (presenting the token it held) its first inventory keeps what it lists.
+func TestHeartbeatInventory_LostTokenIsToldToRegisterAgain(t *testing.T) {
+	ctx := context.Background()
+	e := newReapEnv(t, ctx, time.Hour)
+	srv := e.server()
+	token := e.registerWorker(t, ctx, "wk-restored")
+	e.seed(t, ctx, "sbx-kept", sandboxpkg.StatusRunning, 3600, 0, "wk-restored")
+	e.setLastSeen(t, ctx, "sbx-kept", time.Minute)
+
+	if _, err := e.pool.Exec(ctx, `UPDATE worker SET fencing_token = 0, inventory_token = 0 WHERE id = 'wk-restored'`); err != nil {
+		t.Fatalf("lose the token: %v", err)
+	}
+	if err := e.heartbeat(srv, "wk-restored", token, true, "sbx-kept"); status.Code(err) != codes.NotFound {
+		t.Fatalf("inventory heartbeat with a token the database lost: want NotFound, got %v", err)
+	}
+	assertStatus(t, ctx, e.sandboxRepo, "sbx-kept", sandboxpkg.StatusRunning)
+	if age := e.lastSeenAge(t, ctx, "sbx-kept"); age < 30*time.Second {
+		t.Fatalf("a refused inventory refreshed the sandbox (last seen %s ago)", age)
+	}
+
+	w, err := e.workerRepo.Register(ctx, workerpkg.Worker{
+		ID: "wk-restored", Status: workerpkg.WorkerStatusActive, Address: e.host, Port: e.port, Capacity: 10,
+		FencingToken: token,
+	})
+	if err != nil {
+		t.Fatalf("register again: %v", err)
+	}
+	if w.FencingToken <= token {
+		t.Fatalf("new token %d must be above the one the worker held (%d)", w.FencingToken, token)
+	}
+	if err := e.heartbeat(srv, "wk-restored", w.FencingToken, true, "sbx-kept"); err != nil {
+		t.Fatalf("inventory heartbeat after registering again: %v", err)
+	}
+	assertStatus(t, ctx, e.sandboxRepo, "sbx-kept", sandboxpkg.StatusRunning)
+	if age := e.lastSeenAge(t, ctx, "sbx-kept"); age > 5*time.Second {
+		t.Fatalf("the listed sandbox must be refreshed, last seen %s ago", age)
+	}
+}
+
 // A sandbox its worker stops listing is failed once the liveness delay passes,
-// and cleaned up on the worker; listed ones are left alone.
+// and cleaned up on the worker; listed ones are left alone. The worker has been
+// registered for a while: liveness counts from its registration if that is
+// later, since a process that has just started has had no chance to list
+// anything (the first inventory handles what the previous process left).
 func TestReapSandbox_LivenessExpiry(t *testing.T) {
 	ctx := context.Background()
 	e := newReapEnv(t, ctx, 15*time.Second)
 	e.registerWorker(t, ctx, "wk-live")
+	e.setRegisteredAt(t, ctx, "wk-live", time.Hour)
+	e.registerWorker(t, ctx, "wk-restarted")
 	e.seed(t, ctx, "sbx-lost", sandboxpkg.StatusRunning, 3600, 0, "wk-live")
 	e.seed(t, ctx, "sbx-alive", sandboxpkg.StatusRunning, 3600, 0, "wk-live")
+	e.seed(t, ctx, "sbx-before-restart", sandboxpkg.StatusRunning, 3600, 0, "wk-restarted")
 	e.setLastSeen(t, ctx, "sbx-lost", 20*time.Second)
 	e.setLastSeen(t, ctx, "sbx-alive", 5*time.Second)
+	e.setLastSeen(t, ctx, "sbx-before-restart", 20*time.Second)
 
 	e.runReaper(t, ctx)
 
@@ -407,6 +472,44 @@ func TestReapSandbox_LivenessExpiry(t *testing.T) {
 		t.Fatalf("expected one remote removal for sbx-lost, got %d", n)
 	}
 	assertStatus(t, ctx, e.sandboxRepo, "sbx-alive", sandboxpkg.StatusRunning)
+	// Claimed in the same pass if it were claimable.
+	assertStatus(t, ctx, e.sandboxRepo, "sbx-before-restart", sandboxpkg.StatusRunning)
+}
+
+// A worker the orchestrator lost sight of keeps its sandboxes: with no heartbeat
+// there is no inventory, so nothing ages. They are failed only once the worker
+// has been inactive for the worker-lost timeout.
+func TestReapSandbox_SilentWorkerKeepsItsSandboxesUntilLost(t *testing.T) {
+	ctx := context.Background()
+	e := newReapEnvAll(t, ctx, 15*time.Second, 2*time.Minute, 0)
+	for _, id := range []string{"wk-outage", "wk-gone"} {
+		e.registerWorker(t, ctx, id)
+		e.setRegisteredAt(t, ctx, id, time.Hour)
+	}
+	// Both stopped heartbeating 10 minutes ago, the orchestrator was down.
+	e.seed(t, ctx, "sbx-outage", sandboxpkg.StatusRunning, 3600, 0, "wk-outage")
+	e.seed(t, ctx, "sbx-gone", sandboxpkg.StatusRunning, 3600, 0, "wk-gone")
+	for _, id := range []string{"sbx-outage", "sbx-gone"} {
+		e.setLastSeen(t, ctx, id, 10*time.Minute)
+	}
+	if _, err := e.pool.Exec(ctx, `UPDATE worker SET last_heartbeat = now() - interval '10 minutes'`); err != nil {
+		t.Fatalf("age heartbeats: %v", err)
+	}
+	// The worker reaper marked wk-gone inactive 5 minutes ago and wk-outage just now.
+	if _, err := e.pool.Exec(ctx, `UPDATE worker SET status = 'inactive', inactive_since = now() - interval '5 minutes' WHERE id = 'wk-gone'`); err != nil {
+		t.Fatalf("mark gone: %v", err)
+	}
+	if _, err := e.pool.Exec(ctx, `UPDATE worker SET status = 'inactive', inactive_since = now() WHERE id = 'wk-outage'`); err != nil {
+		t.Fatalf("mark outage: %v", err)
+	}
+
+	e.runReaper(t, ctx)
+
+	waitForStatus(t, ctx, e.sandboxRepo, "sbx-gone", sandboxpkg.StatusFailed, 10*time.Second)
+	assertStatus(t, ctx, e.sandboxRepo, "sbx-outage", sandboxpkg.StatusRunning)
+	if n := e.fake.RemoveCallCount("sbx-outage"); n != 0 {
+		t.Fatalf("a sandbox of a worker just seen inactive was removed %d time(s)", n)
+	}
 }
 
 // Sandboxes a worker hosts but the database does not attribute to it are

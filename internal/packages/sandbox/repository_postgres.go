@@ -31,9 +31,12 @@ type Repository interface {
 	// (seconds; <= 0 expires immediately) has passed to cleanup_pending and
 	// returns their IDs. Rows locked by a concurrent claim are skipped.
 	ClaimTTLExpired(ctx context.Context) ([]string, error)
-	// ClaimLivenessExpired moves every active sandbox hosted by a worker that has
-	// not listed it for longer than timeout to cleanup_pending and returns their IDs.
-	ClaimLivenessExpired(ctx context.Context, timeout time.Duration) ([]string, error)
+	// ClaimLivenessExpired moves every active sandbox its worker no longer vouches
+	// for to cleanup_pending and returns their IDs: the worker heartbeats but has
+	// not listed it for livenessTimeout, or the worker has been inactive for
+	// longer than workerLostTimeout (which must be positive). A sandbox is never
+	// failed for the orchestrator's own silence: see the implementation.
+	ClaimLivenessExpired(ctx context.Context, livenessTimeout, workerLostTimeout time.Duration) ([]string, error)
 	// ClaimStalledCreation moves every sandbox that has been pending or scheduling
 	// for longer than timeout to cleanup_pending and returns their IDs. Those
 	// have no worker yet, so liveness never sees them; a create job that gave up

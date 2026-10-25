@@ -38,8 +38,9 @@ func TestA1_WorkerCrashesAndComesBack(t *testing.T) {
 }
 
 // A2: the whole machine is lost, VMs included. The worker must be shown
-// inactive, its sandboxes failed with the worker link dropped, and new
-// sandboxes must go to the other worker.
+// inactive, then, once it has stayed so for the worker-lost timeout, its
+// sandboxes failed with the worker link dropped; new sandboxes must go to the
+// other worker.
 func TestA2_MachineLost(t *testing.T) {
 	c := newCluster(t)
 	w1 := c.AddWorker("w1")
@@ -55,14 +56,23 @@ func TestA2_MachineLost(t *testing.T) {
 	t.Logf("A2: w1 shown inactive %s after the machine was lost (HEARTBEAT_TIMEOUT %s, reaper every %s)",
 		time.Since(killed).Round(10*time.Millisecond), heartbeatTimeout, reaperInterval)
 
+	// An inactive worker is not a lost one: the orchestrator cannot tell a dead
+	// machine from a cut it suffers itself, so the sandboxes get the whole
+	// worker-lost timeout. Liveness (2s) must not fail them on its own.
+	for _, id := range []string{s1.ID, s2.ID} {
+		if st := c.Sandbox(id).Status; st != sandboxpkg.StatusRunning {
+			t.Errorf("sandbox %s is %s as soon as w1 is shown inactive, want running until the worker is lost for %s", short(id), st, workerLostTimeout)
+		}
+	}
+
 	for _, id := range []string{s1.ID, s2.ID} {
 		sbx := c.WaitStatus(id, settle, sandboxpkg.StatusFailed)
 		if sbx.WorkerID != nil {
 			t.Errorf("sandbox %s is failed but still linked to worker %s", short(id), *sbx.WorkerID)
 		}
 	}
-	t.Logf("A2: both sandboxes failed %s after the machine was lost (liveness timeout %s)",
-		time.Since(killed).Round(10*time.Millisecond), livenessTimeout)
+	t.Logf("A2: both sandboxes failed %s after the machine was lost (worker-lost timeout %s, counted from the worker being shown inactive)",
+		time.Since(killed).Round(10*time.Millisecond), workerLostTimeout)
 
 	// A machine that is gone refuses the scheduler's GetWorkerInfo call, so it
 	// is no candidate at all. The scheduler's own staleness check is 15s,
@@ -79,9 +89,10 @@ func TestA2_MachineLost(t *testing.T) {
 
 // A3: the incident. A worker is replaced by an old binary that the
 // orchestrator refuses (heartbeats without a fencing token) but whose gRPC
-// server still answers. The orchestrator sees a silent worker: its sandbox must
-// end failed and its VM removed. When a current worker comes back, everything
-// is true again.
+// server still answers. The orchestrator sees a silent worker, inactive for as
+// long as that lasts: once it has been for the worker-lost timeout, its sandbox
+// must end failed and its VM removed. When a current worker comes back,
+// everything is true again.
 func TestA3_WorkerReplacedByARefusedOldBinary(t *testing.T) {
 	c := newCluster(t)
 	w := c.AddWorker("w1")
@@ -102,10 +113,10 @@ func TestA3_WorkerReplacedByARefusedOldBinary(t *testing.T) {
 	if !eventually(t, settle, func() bool { return !w.VMs.Hosts(sbx.ID) }) {
 		t.Fatalf("the VM of a failed sandbox is still on the worker that answers\n%s", c.dump())
 	}
-	// The worker reaper and liveness both run on the same 2s delay, so w1 may
-	// not be marked yet when the sandbox is already failed.
-	if !eventually(t, settle, func() bool { return c.Worker("w1").Status == workerpkg.WorkerStatusInactive }) {
-		t.Errorf("w1 is %s while its heartbeats are refused, want inactive", c.Worker("w1").Status)
+	// The sandbox only fails once w1 has been inactive for the worker-lost
+	// timeout, so w1 is necessarily shown inactive by now.
+	if st := c.Worker("w1").Status; st != workerpkg.WorkerStatusInactive {
+		t.Errorf("w1 is %s while its heartbeats are refused, want inactive", st)
 	}
 
 	legacy.Stop()
@@ -168,5 +179,31 @@ func TestA5_ShortPartitionChangesNothing(t *testing.T) {
 	}
 	if removed := w.VMs.Removed(); len(removed) != 0 {
 		t.Errorf("healthy VMs were removed: %v", removed)
+	}
+}
+
+// A6: the orchestrator is unreachable for every worker (deploy, crash,
+// Postgres failover) longer than the liveness timeout and the heartbeat
+// timeout, but shorter than the worker-lost timeout. Workers and VMs are
+// healthy the whole time: nothing may be failed or removed.
+func TestA6_OrchestratorOutageKillsNothing(t *testing.T) {
+	c := newCluster(t)
+	w1, w2 := c.AddWorker("w1"), c.AddWorker("w2")
+	s1, s2 := c.Create(), c.Create()
+
+	w1.Partition(true)
+	w2.Partition(true)
+	time.Sleep(3 * time.Second) // > liveness (2s) and > HEARTBEAT_TIMEOUT (2s)
+	w1.Partition(false)
+	w2.Partition(false)
+
+	assertConverged(t, c, settle)
+	for _, id := range []string{s1.ID, s2.ID} {
+		if st := c.Sandbox(id).Status; st != sandboxpkg.StatusRunning {
+			t.Errorf("healthy sandbox %s ended %s", short(id), st)
+		}
+	}
+	if r := append(w1.VMs.Removed(), w2.VMs.Removed()...); len(r) != 0 {
+		t.Errorf("healthy VMs were removed: %v", r)
 	}
 }

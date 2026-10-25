@@ -45,13 +45,18 @@ import (
 )
 
 // The delays the orchestrator runs with in a test, in place of production's
-// (15s heartbeat timeout, 10s and 1m reapers, 5s worker heartbeats).
+// (15s heartbeat timeout, 10s and 1m reapers, 5s worker heartbeats, 2m before a
+// silent worker's sandboxes are failed).
 const (
 	heartbeatInterval     = 100 * time.Millisecond
 	heartbeatTimeout      = 2 * time.Second
 	reaperInterval        = 200 * time.Millisecond
 	livenessTimeout       = 2 * time.Second
 	sandboxReaperInterval = 200 * time.Millisecond
+	// workerLostTimeout outlasts the longest outage a scenario rides out (A6
+	// cuts the orchestrator off for 3s), and is short enough for A2 and A3 to
+	// settle well within settle.
+	workerLostTimeout = 5 * time.Second
 	// createTimeout is generous: a healthy creation takes a few seconds, and a
 	// scenario that is not about stalled creations must never see one reaped.
 	createTimeout = 30 * time.Second
@@ -89,6 +94,12 @@ func WithLivenessTimeout(d time.Duration) ClusterOption {
 	return func(cfg *app.Config) { cfg.SandboxLivenessTimeout = d }
 }
 
+// WithWorkerLostTimeout changes how long a worker must stay inactive before its
+// sandboxes are failed.
+func WithWorkerLostTimeout(d time.Duration) ClusterOption {
+	return func(cfg *app.Config) { cfg.SandboxWorkerLostTimeout = d }
+}
+
 // WithCreateTimeout changes how long a sandbox may stay pending or scheduling
 // before the reaper fails it.
 func WithCreateTimeout(d time.Duration) ClusterOption {
@@ -103,12 +114,13 @@ func newCluster(t *testing.T, opts ...ClusterOption) *Cluster {
 	ctx := context.Background()
 
 	cfg := app.Config{
-		Port:                   "0",
-		HeartbeatTimeout:       heartbeatTimeout,
-		ReaperInterval:         reaperInterval,
-		SandboxLivenessTimeout: livenessTimeout,
-		SandboxReaperInterval:  sandboxReaperInterval,
-		SandboxCreateTimeout:   createTimeout,
+		Port:                     "0",
+		HeartbeatTimeout:         heartbeatTimeout,
+		ReaperInterval:           reaperInterval,
+		SandboxLivenessTimeout:   livenessTimeout,
+		SandboxWorkerLostTimeout: workerLostTimeout,
+		SandboxReaperInterval:    sandboxReaperInterval,
+		SandboxCreateTimeout:     createTimeout,
 	}
 	for _, opt := range opts {
 		opt(&cfg)

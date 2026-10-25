@@ -93,7 +93,9 @@ func Spawn(shimPath, dir, firecrackerPath string) (*Handle, error) {
 }
 
 // Attach reconnects to the shim already running for dir, e.g. after a worker
-// restart. It returns ErrShimGone if there is none.
+// restart. It returns ErrShimGone if there is none, or if its VM already exited:
+// the shim is then only finishing, and a connection made now may sit in the
+// socket's queue and be dropped unanswered when its listener closes.
 func Attach(dir string) (*Handle, error) {
 	pid, err := readPid(dir)
 	if err != nil {
@@ -101,6 +103,11 @@ func Attach(dir string) (*Handle, error) {
 	}
 	if !isShimOf(pid, dir) {
 		return nil, fmt.Errorf("%w: pid %d is not the shim of %s", ErrShimGone, pid, dir)
+	}
+	// shim.exit is written before the shim tells anyone, and Spawn removes the
+	// previous one: if it exists, the VM of this shim is over.
+	if code, err := readExit(dir); err == nil {
+		return nil, fmt.Errorf("%w: its VM already exited with code %d", ErrShimGone, code)
 	}
 	conn, err := net.Dial("unix", Path(dir, SocketFile))
 	if err != nil {
@@ -116,20 +123,31 @@ func newHandle(dir string, pid int, conn net.Conn) *Handle {
 }
 
 // read waits for the shim's only message, or for the connection to drop.
+//
+// A connection can drop without the shim ever having answered it: one still in
+// the socket's queue (Dial succeeded, Accept has not run) when the shim, done
+// telling its clients, closes its listener. The shim records the exit in
+// shim.exit before it tells anyone, so when the line is missing or unreadable
+// the file still has the code, if Firecracker did exit. Without it, the shim
+// itself died.
 func (h *Handle) read() {
 	defer close(h.done)
 	line, err := bufio.NewReader(h.conn).ReadString('\n')
 	h.conn.Close()
-	if err != nil {
-		h.code, h.err = -1, errors.New("shim died without reporting an exit")
+	if err == nil {
+		var code int
+		if code, err = parseExitedLine(line); err == nil {
+			h.code = code
+			return
+		}
+	} else {
+		err = errors.New("shim died without reporting an exit")
+	}
+	if code, exitErr := readExit(h.dir); exitErr == nil {
+		h.code = code
 		return
 	}
-	code, err := parseExitedLine(line)
-	if err != nil {
-		h.code, h.err = -1, err
-		return
-	}
-	h.code = code
+	h.code, h.err = -1, err
 }
 
 // Pid is the shim's PID.

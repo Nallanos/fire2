@@ -108,12 +108,12 @@ func TestB3_StaleProcessCannotModifyAnything(t *testing.T) {
 }
 
 // B4: the database loses track of a healthy worker's fencing token, as when it
-// is restored from an older backup. The worker must find its way back.
-//
-// Today it does not: it only registers when its own token is 0, so it keeps
-// presenting a token the database no longer knows and is refused forever,
-// FailedPrecondition on every heartbeat, while its VMs run on and get failed
-// by the liveness reaper.
+// is restored from an older backup. The worker must find its way back: the
+// orchestrator answers its heartbeat NotFound (the database is behind, this is
+// not an older process), the worker registers again presenting the token it
+// held, and its heartbeats are accepted again with its VMs untouched. B3 is the
+// other side: an older process presents a token behind the database's and stays
+// refused for good.
 func TestB4_WorkerRecoversFromALostFencingToken(t *testing.T) {
 	c := newCluster(t)
 	w := c.AddWorker("w1")
@@ -125,10 +125,14 @@ func TestB4_WorkerRecoversFromALostFencingToken(t *testing.T) {
 	}
 
 	const within = 30 * time.Second
+	lost := time.Now()
 	recovered := eventually(t, within, func() bool {
 		token, inventoryToken, found := c.tokens("w1")
 		return found && token > 0 && inventoryToken == token
 	})
+	if recovered {
+		t.Logf("B4: w1 registered again and its inventory reconciled %s after the database lost its token", time.Since(lost).Round(10*time.Millisecond))
+	}
 	if !recovered {
 		token, inventoryToken, _ := c.tokens("w1")
 		gap(t, "B4",
@@ -137,6 +141,12 @@ func TestB4_WorkerRecoversFromALostFencingToken(t *testing.T) {
 				token, inventoryToken, w.Heartbeats(codes.FailedPrecondition), short(sbx.ID), c.Sandbox(sbx.ID).Status, c.dump()))
 	}
 	assertConverged(t, c, settle)
+	if got := c.Sandbox(sbx.ID).Status; got != sandboxpkg.StatusRunning {
+		t.Errorf("sandbox %s is %s after the worker registered again, want running", short(sbx.ID), got)
+	}
+	if removed := w.VMs.Removed(); len(removed) != 0 {
+		t.Errorf("healthy VMs were removed: %v", removed)
+	}
 }
 
 // B5: heartbeats without an inventory (inventory_complete=false) reconcile

@@ -13,6 +13,14 @@ import (
 
 var ErrNoWorkerCandidates = errors.New("no worker candidates available")
 
+// cpuUsageScale is what a worker's cpu_usage is a part of: it is the machine's
+// load in percent (0 to 100, from the load average over the core count: see
+// worker.readCPUUsagePercent), not a number of cores. It is therefore compared
+// to 100, never to cpu_budget, which counts cores: dividing one by the other
+// judged a 2-core worker full at 2% load. Memory is different, mem_usage and
+// mem_budget are both in MiB.
+const cpuUsageScale = 100
+
 // ErrClusterFull is returned when at least one active worker is reachable but
 // none has CPU and memory budget left. Unlike ErrNoWorkerCandidates, retrying
 // immediately won't help, and callers should surface it as a 503.
@@ -149,7 +157,7 @@ func (s *Scheduler) WorkerLoadScore(info *workerv1.GetWorkerInfoResponse) float6
 		return math.MaxFloat64
 	}
 
-	cpuRatio := usageRatio(info.GetCpuUsage(), info.GetCpuBudget())
+	cpuRatio := usageRatio(info.GetCpuUsage(), cpuUsageScale)
 	memRatio := usageRatio(info.GetMemUsage(), info.GetMemBudget())
 
 	// CPU tends to be the main bottleneck for sandbox workloads.
@@ -161,7 +169,7 @@ func (s *Scheduler) WorkerWeight(info *workerv1.GetWorkerInfoResponse) float64 {
 		return 0
 	}
 
-	cpuLeft := leftRatio(info.GetCpuUsage(), info.GetCpuBudget())
+	cpuLeft := leftRatio(info.GetCpuUsage(), cpuUsageScale)
 	memLeft := leftRatio(info.GetMemUsage(), info.GetMemBudget())
 
 	return (0.7 * cpuLeft) + (0.3 * memLeft)
@@ -170,7 +178,7 @@ func (s *Scheduler) WorkerWeight(info *workerv1.GetWorkerInfoResponse) float64 {
 // hasCapacity reports whether a worker still has both CPU and memory budget
 // left; either resource being exhausted makes it unable to host a new sandbox.
 func hasCapacity(info *workerv1.GetWorkerInfoResponse) bool {
-	return usageRatio(info.GetCpuUsage(), info.GetCpuBudget()) < 1 &&
+	return usageRatio(info.GetCpuUsage(), cpuUsageScale) < 1 &&
 		usageRatio(info.GetMemUsage(), info.GetMemBudget()) < 1
 }
 

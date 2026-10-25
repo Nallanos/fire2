@@ -14,11 +14,12 @@ import (
 	"github.com/riverqueue/river/rivermigrate"
 
 	"github/nallanos/fire2/internal/app"
+	"github/nallanos/fire2/internal/logging"
 	"github/nallanos/fire2/internal/packages/orchestrator"
 )
 
 func main() {
-	app.SetupLogger("fire2-api")
+	logging.SetupLogger("fire2-api")
 
 	cfg := app.ConfigFromEnv()
 	ctx := context.Background()

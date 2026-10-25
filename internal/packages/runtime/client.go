@@ -54,8 +54,13 @@ func SandboxBaseDir() string {
 	return defaultSandboxBaseDir
 }
 
-// NewClient creates the sandbox's directory, for a VM about to be spawned.
+// NewClient creates the sandbox's directory, for a VM about to be spawned. The
+// ID must be a sandbox ID (a UUID): it names a directory the worker later
+// removes recursively, as root.
 func NewClient(sandboxId string) (*Client, error) {
+	if err := CheckSandboxID(sandboxId); err != nil {
+		return nil, err
+	}
 	dir := filepath.Join(SandboxBaseDir(), sandboxId)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("create sandbox dir: %w", err)
@@ -64,8 +69,12 @@ func NewClient(sandboxId string) (*Client, error) {
 }
 
 // Attach reconnects to the VM a previous worker process left running. It
-// fails with shim.ErrShimGone if the sandbox has no live shim.
+// fails with shim.ErrShimGone if the sandbox has no live shim, and with
+// ErrInvalidSandboxID if the ID is not a sandbox ID.
 func Attach(sandboxId string) (*Client, error) {
+	if err := CheckSandboxID(sandboxId); err != nil {
+		return nil, err
+	}
 	c := newClient(sandboxId, filepath.Join(SandboxBaseDir(), sandboxId))
 	h, err := shim.Attach(c.Dir)
 	if err != nil {
