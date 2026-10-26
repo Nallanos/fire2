@@ -68,10 +68,12 @@ type createSandboxRequest struct {
 // Defaults match the Firecracker config validated manually during
 // development. Applied whenever the caller doesn't specify a value, so
 // requests from clients unaware of these fields still get a Firecracker-valid
-// machine-config instead of a rejected vcpu_count of 0.
+// machine-config instead of a rejected vcpu_count of 0. They are the size of
+// one worker slot, which is also the most a sandbox may ask for
+// (workerpkg.CheckSandboxSize): the worker sizes its capacity in these slots.
 const (
-	defaultVcpuCount  int32 = 1
-	defaultMemSizeMib int32 = 256
+	defaultVcpuCount  int32 = workerpkg.SandboxVcpu
+	defaultMemSizeMib int32 = workerpkg.SandboxMemMiB
 )
 
 func (h *HTTPHandlers) createSandbox(w http.ResponseWriter, r *http.Request) {
@@ -88,6 +90,10 @@ func (h *HTTPHandlers) createSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Runtime == "" {
 		http.Error(w, sandboxpkg.ErrMsgRuntimeRequired, http.StatusBadRequest)
+		return
+	}
+	if err := workerpkg.CheckSandboxSize(body.VcpuCount, body.MemSizeMib); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if body.TTL <= 0 {

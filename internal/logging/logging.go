@@ -1,4 +1,8 @@
-package app
+// Package logging sets up the process-wide structured logger shared by every
+// binary. It depends on the standard library only: fire2-shim imports it, and
+// must not drag the orchestrator's dependencies into the process that must
+// never crash.
+package logging
 
 import (
 	"log/slog"

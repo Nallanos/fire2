@@ -4,11 +4,11 @@ import (
 	"log/slog"
 	"time"
 
-	"github/nallanos/fire2/internal/app"
+	"github/nallanos/fire2/internal/logging"
 )
 
 func main() {
-	app.SetupLogger("keepalive")
+	logging.SetupLogger("keepalive")
 
 	slog.Info("keepalive started")
 	for {

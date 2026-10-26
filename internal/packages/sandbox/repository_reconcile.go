@@ -82,12 +82,42 @@ func (r *PostgresRepository) ClaimTTLExpired(ctx context.Context) ([]string, err
 	return r.queryIDs(ctx, q)
 }
 
-func (r *PostgresRepository) ClaimLivenessExpired(ctx context.Context, timeout time.Duration) ([]string, error) {
-	const q = claimToCleanupPrefix + `
-		status IN ('assigned', 'starting', 'running')
-		AND worker_id IS NOT NULL
-		AND COALESCE(last_seen_at, created_at) < now() - make_interval(secs => $1)` + claimToCleanupSuffix
-	return r.queryIDs(ctx, q, timeout.Seconds())
+// ClaimLivenessExpired measures a sandbox's liveness against its worker, not
+// against the orchestrator's clock: an orchestrator that was down, or cut off
+// from every worker, saw no heartbeat and so listed nothing, which says nothing
+// about the sandboxes. A sandbox is claimed when
+//
+//   - its worker keeps heartbeating but has not listed it for livenessTimeout
+//     (last_heartbeat is more than livenessTimeout past last_seen_at; both are
+//     written by the database's clock, in the same transaction when the sandbox
+//     is listed). The count starts at the worker's registration if that is
+//     later: a process that has just registered has not had the chance to list
+//     anything yet (its first heartbeat comes right behind), and the sandboxes
+//     of the process before it are the first inventory's business (Lost); or
+//   - its worker has been inactive for longer than workerLostTimeout: it is gone
+//     for good, not just out of the orchestrator's sight.
+//
+// Every listing and every heartbeat is in the database's clock, so the rule
+// holds across an orchestrator restart, a Postgres failover or a network cut.
+func (r *PostgresRepository) ClaimLivenessExpired(ctx context.Context, livenessTimeout, workerLostTimeout time.Duration) ([]string, error) {
+	if workerLostTimeout <= 0 {
+		return nil, errors.New("ClaimLivenessExpired: workerLostTimeout must be positive")
+	}
+	// FOR UPDATE OF s: only the sandbox rows are locked, never the worker's,
+	// which heartbeats keep writing.
+	const q = `
+		UPDATE sandboxes SET status = 'cleanup_pending'
+		WHERE id IN (
+			SELECT s.id FROM sandboxes s
+			JOIN worker w ON w.id = s.worker_id
+			WHERE s.status IN ('assigned', 'starting', 'running')
+			  AND (
+			    w.last_heartbeat > GREATEST(COALESCE(s.last_seen_at, s.created_at), w.registered_at) + make_interval(secs => $1)
+			    OR (w.status = 'inactive' AND w.inactive_since < now() - make_interval(secs => $2))
+			  )
+			ORDER BY s.created_at FOR UPDATE OF s SKIP LOCKED)
+		RETURNING id`
+	return r.queryIDs(ctx, q, livenessTimeout.Seconds(), workerLostTimeout.Seconds())
 }
 
 func (r *PostgresRepository) ClaimStalledCreation(ctx context.Context, timeout time.Duration) ([]string, error) {

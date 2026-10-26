@@ -8,7 +8,7 @@ import (
 	"os"
 	"strconv"
 
-	"github/nallanos/fire2/internal/app"
+	"github/nallanos/fire2/internal/logging"
 	"github/nallanos/fire2/internal/packages/orchestrator"
 	runtimeClient "github/nallanos/fire2/internal/packages/runtime"
 	"github/nallanos/fire2/internal/packages/sandboxmgr"
@@ -17,7 +17,7 @@ import (
 )
 
 func main() {
-	app.SetupLogger("fire2-worker")
+	logging.SetupLogger("fire2-worker")
 
 	reapAll := flag.Bool("reap-all", false,
 		"stop every sandbox on this host (VMs, shims, volumes, directories) and exit; "+

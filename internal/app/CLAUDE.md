@@ -15,7 +15,8 @@ The `*river.Client[pgx.Tx]` is required — it is passed through to `HTTPHandler
 
 Shared by `cmd/api` and the divergence harness (`test/divergence`), so the harness tests the wiring that runs in production:
 
-- `NewRiverClient(pool, cfg, retry)` — the five River workers (create, cleanup, reap workers, reap sandbox, remove orphan), the three queues (`default`, `cleanup`, `reap_sandbox`) and the two periodic jobs, whose intervals and timeouts come from `cfg` (`ReaperInterval`, `HeartbeatTimeout`, `SandboxReaperInterval`, `SandboxLivenessTimeout`, `SandboxCreateTimeout`). The caller runs the River migrations and starts the client.
+- `NewRiverClient(pool, cfg, retry)` — the five River workers (create, cleanup, reap workers, reap sandbox, remove orphan), the three queues (`default`, `cleanup`, `reap_sandbox`) and the two periodic jobs, whose intervals and timeouts come from `cfg` (`ReaperInterval`, `HeartbeatTimeout`, `SandboxReaperInterval`, `SandboxLivenessTimeout`, `SandboxWorkerLostTimeout`, `SandboxCreateTimeout`). The caller runs the River migrations and starts the client.
+- The River client gets an explicit `JobTimeout` (`orchestrator.JobTimeout`, 80s): it must cover a full attempt of the create job, 5s of candidate probing then a `CreateSandbox` call of up to 45s, and River's default (1m) would leave 10s for the database.
 - `NewEventServer(pool, riverClient)` — the `EventGRPCServer` with `WithTransactions` and `WithRiverClient`.
 
 ## Middleware stack (applied globally)
@@ -35,6 +36,7 @@ Loaded from environment in `ConfigFromEnv()`:
 | `HEARTBEAT_TIMEOUT` | `15s` | `HeartbeatTimeout` |
 | `REAPER_INTERVAL` | `10s` | `ReaperInterval` |
 | `SANDBOX_LIVENESS_TIMEOUT` | `15s` | `SandboxLivenessTimeout` |
+| `SANDBOX_WORKER_LOST_TIMEOUT` | `2m` (must be positive) | `SandboxWorkerLostTimeout` |
 | `SANDBOX_REAPER_INTERVAL` | `1m` | `SandboxReaperInterval` |
 | `SANDBOX_CREATE_TIMEOUT` | `5m` (`0` = off) | `SandboxCreateTimeout` |
 

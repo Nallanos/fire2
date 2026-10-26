@@ -9,6 +9,7 @@ import (
 	"time"
 
 	orchestratorv1 "github/nallanos/fire2/gen/orchestrator/v1"
+	runtimeClient "github/nallanos/fire2/internal/packages/runtime"
 )
 
 // eventBuffer is how many state changes may wait for the worker to forward
@@ -125,7 +126,13 @@ func (m *Manager) Events() <-chan StateChange {
 
 // Create boots a sandbox. It is idempotent: a sandbox already tracked is left
 // as is, and a duplicate call doesn't count against capacity.
+//
+// The ID must be a sandbox ID (a UUID, runtime.ErrInvalidSandboxID otherwise):
+// it names directories the worker, as root, creates and removes recursively.
 func (m *Manager) Create(in CreateInput) error {
+	if err := runtimeClient.CheckSandboxID(in.ID); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	if _, ok := m.services[in.ID]; ok {
 		m.mu.Unlock()
@@ -184,6 +191,9 @@ func (m *Manager) Stop(sandboxID string) error {
 // Remove stops the sandbox and releases its resources. It is the only path
 // that drops a tracked sandbox, DEAD ones included.
 func (m *Manager) Remove(sandboxID string) error {
+	if err := runtimeClient.CheckSandboxID(sandboxID); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	if _, ok := m.deleting[sandboxID]; ok {
 		m.mu.Unlock()

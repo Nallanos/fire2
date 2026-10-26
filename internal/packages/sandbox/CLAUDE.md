@@ -32,6 +32,10 @@ pending → scheduling → assigned → starting → running → (user stopped/f
 - `ClearWorker` sets `worker_id = NULL` unconditionally. Used by cleanup worker before marking failed.
 - **Worker side must NOT write the sandbox row.** The container exists on the worker; the row lives in the orchestrator DB. The only time the worker touches the sandbox table is never.
 
+## Reaper claims
+
+`ClaimTTLExpired`, `ClaimLivenessExpired` and `ClaimStalledCreation` move rows to `cleanup_pending` with `FOR UPDATE SKIP LOCKED` and return their IDs; the caller enqueues the cleanup jobs in the same transaction. `ClaimLivenessExpired` joins `worker` and compares the worker's `last_heartbeat`, `registered_at` and `inactive_since` with the sandbox's `last_seen_at`: all are written by the database's `now()`, so liveness never depends on the orchestrator's own uptime (see `internal/packages/orchestrator/CLAUDE.md`). It locks only the sandbox rows (`FOR UPDATE OF s`), never the worker's, which heartbeats keep writing.
+
 ## Test patterns
 
 - Use `testutil.SetupPostgres(t, ctx)` for a real Postgres testcontainer.

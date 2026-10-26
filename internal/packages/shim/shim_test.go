@@ -46,7 +46,12 @@ func fakeFirecracker(args []string) int {
 		}
 	}
 	// Let tests check Pdeathsig: they look this PID up after killing the shim.
-	_ = os.WriteFile(filepath.Join(filepath.Dir(apiSock), "fc.pid"), []byte(strconv.Itoa(os.Getpid())), 0o644)
+	// Written atomically: a test polling for it must never read it half-written
+	// (an empty file reads as PID 0, which is "gone" for every liveness check).
+	pidFile := filepath.Join(filepath.Dir(apiSock), "fc.pid")
+	if err := os.WriteFile(pidFile+".tmp", []byte(strconv.Itoa(os.Getpid())), 0o644); err == nil {
+		_ = os.Rename(pidFile+".tmp", pidFile)
+	}
 
 	mode := os.Getenv(fakeModeEnv)
 	if code, ok := strings.CutPrefix(mode, "exit:"); ok {
@@ -109,8 +114,9 @@ func fcPid(t *testing.T, dir string) int {
 	for {
 		raw, err := os.ReadFile(filepath.Join(dir, "fc.pid"))
 		if err == nil {
-			pid, _ := strconv.Atoi(string(raw))
-			return pid
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && pid > 0 {
+				return pid
+			}
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("fake firecracker never started")
@@ -130,6 +136,18 @@ func processGone(pid int) bool {
 	for time.Now().Before(deadline) {
 		// Gone, or a zombie waiting for its (dead) parent's reaper.
 		if !alive(pid) {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+// fileGone waits, bounded, for path to disappear.
+func fileGone(path string) bool {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
 			return true
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -192,8 +210,10 @@ func TestStopIsGraceful(t *testing.T) {
 	if err != nil || code != 0 {
 		t.Fatalf("Wait = %d, %v; want a clean exit after SIGTERM", code, err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, SocketFile)); !os.IsNotExist(err) {
-		t.Fatalf("shim socket left behind: %v", err)
+	// The shim tells its clients first, then closes its listener, which unlinks
+	// the socket: the file may outlive Wait by a moment.
+	if !fileGone(filepath.Join(dir, SocketFile)) {
+		t.Fatal("shim socket left behind")
 	}
 }
 
@@ -257,6 +277,98 @@ func TestAttachAfterTheWorkerLeft(t *testing.T) {
 	}
 	if _, err := Attach(dir); !errors.Is(err, ErrShimGone) {
 		t.Fatalf("Attach after exit = %v, want ErrShimGone", err)
+	}
+}
+
+// A connection the shim never answered is dropped when its listener closes: it
+// sat in the socket's queue (Dial succeeded, Accept never ran) while the shim
+// finished. The exit is in shim.exit, and that is the code Wait returns, not
+// "the shim died".
+func TestWaitFallsBackToTheExitFile(t *testing.T) {
+	dir := t.TempDir()
+	ln, err := net.Listen("unix", Path(dir, SocketFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	conn, err := net.Dial("unix", Path(dir, SocketFile)) // queued: nobody accepts
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHandle(dir, os.Getpid(), conn)
+
+	// The shim's order: record the exit, then drop its clients.
+	if err := writeExit(dir, 3); err != nil {
+		t.Fatal(err)
+	}
+	ln.Close()
+
+	if code, err := waitDone(t, h); err != nil || code != 3 {
+		t.Fatalf("Wait = %d, %v; want 3, nil from shim.exit", code, err)
+	}
+}
+
+// The same, when what arrives is not an exit line.
+func TestWaitFallsBackToTheExitFileOnAnUnreadableLine(t *testing.T) {
+	dir := t.TempDir()
+	ln, err := net.Listen("unix", Path(dir, SocketFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			_, _ = conn.Write([]byte("garbage\n"))
+			conn.Close()
+		}
+	}()
+	if err := writeExit(dir, 4); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.Dial("unix", Path(dir, SocketFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, err := waitDone(t, newHandle(dir, os.Getpid(), conn)); err != nil || code != 4 {
+		t.Fatalf("Wait = %d, %v; want 4, nil from shim.exit", code, err)
+	}
+}
+
+// Without shim.exit, a connection that drops means the shim died, and the VM
+// with it: that must still be an error.
+func TestWaitWithoutAnExitFileIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	ln, err := net.Listen("unix", Path(dir, SocketFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	conn, err := net.Dial("unix", Path(dir, SocketFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHandle(dir, os.Getpid(), conn)
+	ln.Close()
+
+	if code, err := waitDone(t, h); err == nil || code != -1 {
+		t.Fatalf("Wait = %d, %v; want -1 and an error", code, err)
+	}
+}
+
+// A shim whose VM exited is only finishing: a connection made now may never be
+// answered. Attach reports it gone, however alive the process still is.
+func TestAttachRefusesAShimWhoseVMExited(t *testing.T) {
+	h, dir := spawn(t, "run")
+	fcPid(t, dir)
+	if err := writeExit(dir, 7); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Attach(dir); !errors.Is(err, ErrShimGone) {
+		t.Fatalf("Attach = %v, want ErrShimGone", err)
+	}
+	if !alive(h.Pid()) {
+		t.Fatal("the shim should still be running: this checks Attach does not need it gone")
 	}
 }
 

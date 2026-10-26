@@ -11,6 +11,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
 	workerpkg "github/nallanos/fire2/internal/packages/worker"
@@ -78,12 +80,12 @@ func TestCreateSandboxWorker_PendingToRunning(t *testing.T) {
 
 	// Register the worker.
 	_, err := workerRepo.Create(ctx, workerpkg.Worker{
-		ID:      "wk-d1",
-		Status:  workerpkg.WorkerStatusActive,
-		Address: workerHost,
-		Port:    workerPort,
-		Budget:  workerpkg.Worker_Budget{Cpu_budget: 4, Mem_budget: 4096},
-		Capacity: 4,
+		ID:             "wk-d1",
+		Status:         workerpkg.WorkerStatusActive,
+		Address:        workerHost,
+		Port:           workerPort,
+		Budget:         workerpkg.Worker_Budget{Cpu_budget: 4, Mem_budget: 4096},
+		Capacity:       4,
 		Last_heartbeat: time.Now().UTC(),
 	})
 	if err != nil {
@@ -119,6 +121,57 @@ func TestCreateSandboxWorker_PendingToRunning(t *testing.T) {
 	}
 }
 
+// A worker the network drops packets to leaves CreateSandbox unanswered. The
+// attempt gives up at its own deadline with an error, and the sandbox stays
+// assigned so River retries it from there, instead of the job hanging until
+// River's timeout.
+func TestCreateSandboxWorker_CreateCallTimesOut(t *testing.T) {
+	ctx := context.Background()
+	pool := testutil.SetupPostgres(t, ctx)
+	shortenCallTimeouts(t, 300*time.Millisecond, time.Minute)
+
+	fakeWorker := testutil.NewFakeWorkerServer(10, 10)
+	fakeWorker.CreateDelay = time.Minute
+	workerHost, workerPort := fakeWorker.StartServer(t)
+
+	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
+	workerRepo := workerpkg.NewPostgresRepository(pool)
+	wid := "wk-silent"
+	if _, err := workerRepo.Create(ctx, workerpkg.Worker{
+		ID: wid, Status: workerpkg.WorkerStatusActive, Address: workerHost, Port: workerPort,
+		Budget: workerpkg.Worker_Budget{Cpu_budget: 4, Mem_budget: 4096}, Capacity: 4, Last_heartbeat: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("create worker: %v", err)
+	}
+	seedSandboxForJob(t, ctx, sandboxRepo, "sbx-silent", sandboxpkg.StatusAssigned, &wid)
+
+	worker := NewCreateSandboxWorker(pool, sandboxRepo, workerRepo)
+	began := time.Now()
+	err := worker.Work(ctx, fakeCreateJob("sbx-silent", 1, 5))
+	elapsed := time.Since(began)
+
+	if err == nil {
+		t.Fatal("Work returned nil for a CreateSandbox nobody answered")
+	}
+	var cancelled *river.JobCancelError
+	if errors.As(err, &cancelled) {
+		t.Fatalf("Work cancelled the job on a first attempt (%v): it must be retried", err)
+	}
+	if status.Code(errors.Unwrap(err)) != codes.DeadlineExceeded && !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Work error = %v, want a deadline exceeded", err)
+	}
+	if elapsed < 250*time.Millisecond || elapsed > 10*time.Second {
+		t.Fatalf("Work gave up after %s, want about the 300ms deadline", elapsed)
+	}
+	if got := fakeWorker.CreateCallCount("sbx-silent"); got != 1 {
+		t.Fatalf("CreateSandbox calls = %d, want 1", got)
+	}
+	sbx, _ := sandboxRepo.GetByID(ctx, "sbx-silent")
+	if sbx.Status != sandboxpkg.StatusAssigned {
+		t.Fatalf("sandbox is %s after the timed-out attempt, want assigned (retried from there)", sbx.Status)
+	}
+}
+
 // D4: sandbox already at starting → single Work() advances to running without gRPC.
 func TestCreateSandboxWorker_StartingToRunning(t *testing.T) {
 	ctx := context.Background()
@@ -132,12 +185,12 @@ func TestCreateSandboxWorker_StartingToRunning(t *testing.T) {
 
 	wid := "wk-d4"
 	_, err := workerRepo.Create(ctx, workerpkg.Worker{
-		ID:      wid,
-		Status:  workerpkg.WorkerStatusActive,
-		Address: workerHost,
-		Port:    workerPort,
-		Budget:  workerpkg.Worker_Budget{Cpu_budget: 4, Mem_budget: 4096},
-		Capacity: 4,
+		ID:             wid,
+		Status:         workerpkg.WorkerStatusActive,
+		Address:        workerHost,
+		Port:           workerPort,
+		Budget:         workerpkg.Worker_Budget{Cpu_budget: 4, Mem_budget: 4096},
+		Capacity:       4,
 		Last_heartbeat: time.Now().UTC(),
 	})
 	if err != nil {

@@ -56,6 +56,11 @@ type WorkerService struct {
 	heartbeatMu sync.Mutex
 	worker      Worker
 	sandboxes   SandboxManager
+	// needsRegister is true until the process holds a fencing token, and again
+	// when the orchestrator says it no longer knows the worker. The token
+	// held is then kept and presented, so the new one is above it. Guarded by
+	// heartbeatMu.
+	needsRegister bool
 }
 
 type CreateSandboxInput struct {
