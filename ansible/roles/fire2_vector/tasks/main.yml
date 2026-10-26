@@ -1,0 +1,10 @@
+---
+- name: Validate required variables
+  ansible.builtin.assert:
+    that:
+      - victorialogs_addr | length > 0
+      - vector_journald_units | length > 0
+    fail_msg: "victorialogs_addr (group_vars/all.yml) and vector_journald_units (group_vars/workers.yml, orchestrator.yml) must be set"
+
+- ansible.builtin.import_tasks: binary.yml
+- ansible.builtin.import_tasks: systemd.yml

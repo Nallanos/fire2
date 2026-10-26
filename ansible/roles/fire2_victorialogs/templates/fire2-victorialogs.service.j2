@@ -1,0 +1,48 @@
+[Unit]
+Description=fire2 centralized logs (VictoriaLogs)
+Documentation=https://docs.victoriametrics.com/victorialogs/
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+# Give up after 5 failures in 60s instead of crash-looping forever on a
+# config error that will never self-heal (see the worker crash-loop
+# incident — systemd ground on a stale bind address for ~19h unnoticed).
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+[Service]
+User={{ victorialogs_user }}
+Group={{ victorialogs_group }}
+# Log ingestion and the query UI are plain HTTP with no auth: listen on the
+# Tailscale IP only, never 0.0.0.0. The IP is looked up at every start (like
+# the api and worker binaries do), so a changed tailnet address does not leave
+# a stale bind; "+" runs this step as root, whatever User= is. If the host has
+# no tailnet IP after 30s the step fails and VictoriaLogs does not start,
+# rather than falling back to a wider interface. ($$ is systemd's escape for
+# a literal $.)
+RuntimeDirectory=victorialogs
+ExecStartPre=+/bin/sh -c 'for i in $$(seq 30); do ip=$$(tailscale ip -4 | head -n1); [ -n "$$ip" ] && break; sleep 1; done; [ -n "$$ip" ] || exit 1; echo "VL_LISTEN_ADDR=$$ip:{{ victorialogs_port }}" > /run/victorialogs/listen.env'
+# "-": systemd loads this file before every command, ExecStartPre included,
+# and ExecStartPre is what creates it. ExecStart only runs once it succeeded.
+EnvironmentFile=-/run/victorialogs/listen.env
+ExecStart={{ victorialogs_bin }} \
+  -storageDataPath={{ victorialogs_data_dir }} \
+  -retentionPeriod={{ victorialogs_retention_period }} \
+  -retention.maxDiskSpaceUsageBytes={{ victorialogs_retention_max_disk_space }} \
+  -httpListenAddr=${VL_LISTEN_ADDR}
+Restart=on-failure
+RestartSec=5s
+
+# Hardening: it only ever needs its own data dir and the network.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths={{ victorialogs_data_dir }}
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+
+TimeoutStopSec=30s
+
+[Install]
+WantedBy=multi-user.target

@@ -8,3 +8,8 @@
   ansible.builtin.systemd:
     name: fire2-api
     state: restarted
+
+- name: restart systemd-journald
+  ansible.builtin.systemd:
+    name: systemd-journald
+    state: restarted

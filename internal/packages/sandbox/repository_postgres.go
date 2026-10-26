@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -22,7 +23,40 @@ type Repository interface {
 	// UpdateStatus advances status only when current status is one of allowedFrom.
 	// Returns (updated sandbox, rowsAffected, error). rowsAffected=0 means the guard rejected the update.
 	UpdateStatus(ctx context.Context, id string, status Status, allowedFrom ...Status) (Sandbox, int64, error)
-	// AssignWorker sets worker_id and transitions status from scheduling→assigned atomically.
+	// UpdateStatusFenced is UpdateStatus restricted to a sandbox hosted by workerID
+	// whose current fencing token is token. A stale worker incarnation matches no
+	// row, so it cannot move a sandbox's status.
+	UpdateStatusFenced(ctx context.Context, id, workerID string, token int64, status Status, allowedFrom ...Status) (int64, error)
+	// ClaimTTLExpired moves every non-terminal sandbox whose created_at + ttl
+	// (seconds; <= 0 expires immediately) has passed to cleanup_pending and
+	// returns their IDs. Rows locked by a concurrent claim are skipped.
+	ClaimTTLExpired(ctx context.Context) ([]string, error)
+	// ClaimLivenessExpired moves every active sandbox its worker no longer vouches
+	// for to cleanup_pending and returns their IDs: the worker heartbeats but has
+	// not listed it for livenessTimeout, or the worker has been inactive for
+	// longer than workerLostTimeout (which must be positive). A sandbox is never
+	// failed for the orchestrator's own silence: see the implementation.
+	ClaimLivenessExpired(ctx context.Context, livenessTimeout, workerLostTimeout time.Duration) ([]string, error)
+	// ClaimStalledCreation moves every sandbox that has been pending or scheduling
+	// for longer than timeout to cleanup_pending and returns their IDs. Those
+	// have no worker yet, so liveness never sees them; a create job that gave up
+	// without leaving a trace would hold them until their TTL. timeout must be
+	// positive.
+	ClaimStalledCreation(ctx context.Context, timeout time.Duration) ([]string, error)
+	// ReconcileInventory matches a worker's complete heartbeat inventory
+	// against the sandboxes assigned to it, reacting to each reported state
+	// (see Inventory): live ones get last_seen_at refreshed, running ones move
+	// starting→running, dead ones are moved to cleanup_pending and returned as
+	// dead. Unknown ones are left untouched and age toward liveness expiry.
+	//
+	// On the first inventory of a new incarnation (firstInventory), every active
+	// sandbox that is not listed and was last seen before the worker registered
+	// belonged to the previous process, whose VMs died with it: they are moved
+	// to cleanup_pending and returned as lost. Sandboxes assigned since the
+	// registration are spared (their create call may not have reached the worker).
+	ReconcileInventory(ctx context.Context, workerID string, firstInventory bool, inv Inventory) (ReconcileResult, error)
+	// AssignWorker sets worker_id and transitions status from scheduling→assigned atomically,
+	// only if the worker still has capacity (otherwise ErrWorkerFull).
 	AssignWorker(ctx context.Context, id string, workerID string) (Sandbox, error)
 	// ClearWorker sets worker_id back to null; guarded to only act from cleanup_pending.
 	ClearWorker(ctx context.Context, id string) error
@@ -131,18 +165,66 @@ func (r *PostgresRepository) UpdateStatus(ctx context.Context, id string, status
 	return s, 1, nil
 }
 
+// AssignWorker only assigns when the worker still has room. It runs in a
+// transaction: the worker row is locked first so concurrent assignments to the
+// same worker are serialized, and the occupancy count is then read by a second
+// statement (fresh snapshot) that sees every assignment committed before the
+// lock was granted. A single UPDATE with a subquery count would not — its
+// snapshot is taken before it waits on the lock.
+//
+// Returns ErrWorkerFull when the worker is at capacity, and a zero Sandbox with
+// a nil error when the status guard rejected the update (advanced concurrently).
 func (r *PostgresRepository) AssignWorker(ctx context.Context, id string, workerID string) (Sandbox, error) {
-	const q = `
-		UPDATE sandboxes SET worker_id = $1, status = 'assigned'
-		WHERE id = $2 AND status = 'scheduling'
-		RETURNING id, runtime, status, ttl, created_at, port, preview_url, image, worker_id, vcpu_count, mem_size_mib, user_id`
+	beginner, ok := r.db.(interface {
+		Begin(ctx context.Context) (pgx.Tx, error)
+	})
+	if !ok {
+		return Sandbox{}, errors.New("AssignWorker: db cannot begin a transaction")
+	}
+	tx, err := beginner.Begin(ctx)
+	if err != nil {
+		return Sandbox{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 
-	row := r.db.QueryRow(ctx, q, workerID, id)
-	s, err := scanSandbox(row)
+	var capacity int
+	err = tx.QueryRow(ctx, `SELECT capacity FROM worker WHERE id = $1 FOR UPDATE`, workerID).Scan(&capacity)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return Sandbox{}, nil
+			return Sandbox{}, fmt.Errorf("assign worker: worker %s not found", workerID)
 		}
+		return Sandbox{}, err
+	}
+
+	// cleanup_pending still holds its VM until the cleanup job clears worker_id.
+	const q = `
+		UPDATE sandboxes SET worker_id = $1, status = 'assigned', last_seen_at = now()
+		WHERE id = $2 AND status = 'scheduling'
+		  AND (SELECT count(*) FROM sandboxes
+		       WHERE worker_id = $1
+		         AND status IN ('assigned', 'starting', 'running', 'cleanup_pending')) < $3
+		RETURNING id, runtime, status, ttl, created_at, port, preview_url, image, worker_id, vcpu_count, mem_size_mib, user_id`
+
+	s, err := scanSandbox(tx.QueryRow(ctx, q, workerID, id, capacity))
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return Sandbox{}, err
+		}
+		// No row updated: either the worker is full or the status guard rejected us.
+		var status string
+		if err := tx.QueryRow(ctx, `SELECT status FROM sandboxes WHERE id = $1`, id).Scan(&status); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return Sandbox{}, ErrNotFound
+			}
+			return Sandbox{}, err
+		}
+		if Status(status) == StatusScheduling {
+			return Sandbox{}, ErrWorkerFull
+		}
+		return Sandbox{}, nil
+	}
+
+	if err := tx.Commit(ctx); err != nil {
 		return Sandbox{}, err
 	}
 	return s, nil

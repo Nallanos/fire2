@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Imports BASE_IMAGE (rootfs.ext4) into the pool as the base volume every
 # sandbox volume is snapshotted from, and records it in $POOL_DIR/base.env for
-# fire2-thin. Run by Ansible after fetching the image.
+# the worker (internal/packages/thin). Run by Ansible after fetching the image.
 #
 # No-op when the base already holds this exact image (by sha256). Prints
 # "imported" or "unchanged" — Ansible's changed_when keys on it.
@@ -55,7 +55,7 @@ printf 'BASE_THIN_ID=%s\nBASE_SECTORS=%s\nBASE_SHA256=%s\n' "$new_id" "$sectors"
 mv -f "$tmp" "$STATE"
 
 # Sandbox volumes already snapshotted from the old base keep working: a
-# dm-thin snapshot doesn't depend on its origin. A fire2-thin create racing
+# dm-thin snapshot doesn't depend on its origin. A sandbox volume create racing
 # this swap fails on the deleted ID and the orchestrator's retry lands on the
 # new base.
 if [[ -n $BASE_THIN_ID ]]; then

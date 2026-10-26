@@ -10,3 +10,18 @@
 # waiting for manual approval), and Ephemeral OFF (hosts must survive
 # reboots without falling off the tailnet).
 tailscale_authkey: "{{ lookup('env', 'TAILSCALE_AUTHKEY') }}"
+
+# --- Centralized logs ---
+# Every fire2 Go binary (api, worker, and the per-VM fire2-shim the worker
+# spawns, which inherits the worker's environment) logs JSON lines to stderr
+# at this level: debug, info, warn or error. Read as FIRE2_LOG_LEVEL.
+fire2_log_level: info
+
+# VictoriaLogs (roles/fire2_victorialogs, on the orchestrator) is reached by
+# every host's Vector agent (roles/fire2_vector) at this address. Plain HTTP
+# with no auth, so it must be the orchestrator's Tailscale IP, never its
+# public one (the orchestrator's own Vector uses it too, same as
+# orchestrator_grpc_addr in group_vars/workers.yml). VictoriaLogs binds to
+# whatever `tailscale ip -4` reports on its host at start, on this port.
+victorialogs_port: 9428
+victorialogs_addr: "100.78.175.35:{{ victorialogs_port }}"

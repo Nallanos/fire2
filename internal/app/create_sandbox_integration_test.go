@@ -3,7 +3,6 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -44,7 +43,7 @@ func TestCreateSandbox_HappyPath(t *testing.T) {
 	srv := httptest.NewServer(app.Router())
 	defer srv.Close()
 
-	sbx := createSandbox(t, srv.URL)
+	sbx := createSandbox(t, srv.URL, testutil.AuthHeader(t, pool))
 	if sbx.ID == "" {
 		t.Fatal("expected sandbox id in response")
 	}
@@ -88,10 +87,7 @@ func TestCreateSandbox_NilRiverClient_500(t *testing.T) {
 
 	payload := map[string]any{"runtime": "node", "ttl": 3600}
 	body, _ := json.Marshal(payload)
-	resp, err := http.Post(srv.URL+"/api/sandboxes", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
+	resp := postSandbox(t, srv.URL, testutil.AuthHeader(t, pool), body)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusInternalServerError {
@@ -115,10 +111,7 @@ func TestCreateSandbox_InvalidJSON_400(t *testing.T) {
 	srv := httptest.NewServer(app.Router())
 	defer srv.Close()
 
-	resp, err := http.Post(srv.URL+"/api/sandboxes", "application/json", bytes.NewReader([]byte("not-json")))
-	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
+	resp := postSandbox(t, srv.URL, testutil.AuthHeader(t, pool), []byte("not-json"))
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusBadRequest {
@@ -144,10 +137,7 @@ func TestCreateSandbox_MissingRuntime_400(t *testing.T) {
 
 	payload := map[string]any{"image": "node:20-alpine", "ttl": 3600}
 	body, _ := json.Marshal(payload)
-	resp, err := http.Post(srv.URL+"/api/sandboxes", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
+	resp := postSandbox(t, srv.URL, testutil.AuthHeader(t, pool), body)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusBadRequest {
@@ -158,6 +148,95 @@ func TestCreateSandbox_MissingRuntime_400(t *testing.T) {
 	list, _ := sandboxRepo.List(ctx)
 	if len(list) != 0 {
 		t.Fatalf("expected no rows, got %d", len(list))
+	}
+}
+
+// A worker counts its capacity in slots of 1 vCPU / 256 MiB: a sandbox asking
+// for more is refused with 400 before any row or job exists, so a 4 GiB sandbox
+// can no longer pass for one slot on a worker of 1 GiB.
+func TestCreateSandbox_LargerThanASlot_400(t *testing.T) {
+	ctx := context.Background()
+	pool := testutil.SetupPostgres(t, ctx)
+	riverClient := setupFastRiverClient(t, ctx, pool)
+
+	workerRepo := workerpkg.NewPostgresRepository(pool)
+	if _, err := workerRepo.Create(ctx, workerpkg.Worker{
+		ID: "wk-big", Status: workerpkg.WorkerStatusActive, Address: "127.0.0.1", Port: 50099,
+		Budget: workerpkg.Worker_Budget{Cpu_budget: 2, Mem_budget: 952}, Capacity: 1, Last_heartbeat: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("create worker: %v", err)
+	}
+
+	app := New(Config{Port: "0"}, pool, riverClient)
+	srv := httptest.NewServer(app.Router())
+	defer srv.Close()
+	auth := testutil.AuthHeader(t, pool)
+
+	for name, payload := range map[string]map[string]any{
+		"4 GiB":           {"runtime": "node", "mem_size_mib": 4096},
+		"one MiB too big": {"runtime": "node", "mem_size_mib": workerpkg.SandboxMemMiB + 1},
+		"2 vCPUs":         {"runtime": "node", "vcpu_count": workerpkg.SandboxVcpu + 1},
+		"both":            {"runtime": "node", "vcpu_count": 8, "mem_size_mib": 8192},
+	} {
+		body, _ := json.Marshal(payload)
+		resp := postSandbox(t, srv.URL, auth, body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: expected 400, got %d", name, resp.StatusCode)
+		}
+	}
+
+	list, _ := sandboxpkg.NewPostgresRepository(pool).List(ctx)
+	if len(list) != 0 {
+		t.Fatalf("expected no rows for refused sizes, got %d", len(list))
+	}
+}
+
+// The size of one slot, and anything smaller or unset, is accepted; the sandbox
+// row keeps what was asked, defaults filled in.
+func TestCreateSandbox_SlotSized_201(t *testing.T) {
+	ctx := context.Background()
+	pool := testutil.SetupPostgres(t, ctx)
+
+	fakeWorker := testutil.NewFakeWorkerServer(10, 10)
+	workerHost, workerPort := fakeWorker.StartServer(t)
+	workerRepo := workerpkg.NewPostgresRepository(pool)
+	if _, err := workerRepo.Create(ctx, workerpkg.Worker{
+		ID: "wk-slot", Status: workerpkg.WorkerStatusActive, Address: workerHost, Port: workerPort,
+		Budget: workerpkg.Worker_Budget{Cpu_budget: 4, Mem_budget: 4096}, Capacity: 4, Last_heartbeat: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("create worker: %v", err)
+	}
+
+	riverClient := setupFastRiverClient(t, ctx, pool)
+	app := New(Config{Port: "0"}, pool, riverClient)
+	srv := httptest.NewServer(app.Router())
+	defer srv.Close()
+	auth := testutil.AuthHeader(t, pool)
+
+	for name, tc := range map[string]struct {
+		payload      map[string]any
+		vcpu, memMiB int32
+	}{
+		"exactly one slot": {map[string]any{"runtime": "node", "vcpu_count": workerpkg.SandboxVcpu, "mem_size_mib": workerpkg.SandboxMemMiB}, workerpkg.SandboxVcpu, workerpkg.SandboxMemMiB},
+		"smaller":          {map[string]any{"runtime": "node", "mem_size_mib": 128}, workerpkg.SandboxVcpu, 128},
+		"unset":            {map[string]any{"runtime": "node"}, workerpkg.SandboxVcpu, workerpkg.SandboxMemMiB},
+	} {
+		body, _ := json.Marshal(tc.payload)
+		resp := postSandbox(t, srv.URL, auth, body)
+		var created sandboxResponse
+		err := json.NewDecoder(resp.Body).Decode(&created)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusCreated || err != nil {
+			t.Fatalf("%s: expected 201, got %d (decode: %v)", name, resp.StatusCode, err)
+		}
+		row, err := sandboxpkg.NewPostgresRepository(pool).GetByID(ctx, created.ID)
+		if err != nil {
+			t.Fatalf("%s: GetByID: %v", name, err)
+		}
+		if row.VcpuCount != tc.vcpu || row.MemSizeMib != tc.memMiB {
+			t.Errorf("%s: stored %d vCPU / %d MiB, want %d / %d", name, row.VcpuCount, row.MemSizeMib, tc.vcpu, tc.memMiB)
+		}
 	}
 }
 
@@ -188,12 +267,13 @@ func TestEndToEnd_HappyPath(t *testing.T) {
 	srv := httptest.NewServer(app.Router())
 	defer srv.Close()
 
-	created := createSandbox(t, srv.URL)
+	auth := testutil.AuthHeader(t, pool)
+	created := createSandbox(t, srv.URL, auth)
 	if created.Status != "running" {
 		t.Fatalf("expected running, got %s", created.Status)
 	}
 
-	fetched := getSandbox(t, srv.URL, created.ID)
+	fetched := getSandbox(t, srv.URL, auth, created.ID)
 	if fetched.ID != created.ID {
 		t.Fatalf("GET returned id=%s, want %s", fetched.ID, created.ID)
 	}
@@ -232,10 +312,7 @@ func TestEndToEnd_JobFailure_502(t *testing.T) {
 
 	payload := map[string]any{"runtime": "node", "ttl": 3600}
 	body, _ := json.Marshal(payload)
-	postResp, err := http.Post(srv.URL+"/api/sandboxes", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
+	postResp := postSandbox(t, srv.URL, testutil.AuthHeader(t, pool), body)
 	defer postResp.Body.Close()
 
 	if postResp.StatusCode != http.StatusBadGateway {
@@ -277,10 +354,7 @@ func TestEndToEnd_NoWorkers_503(t *testing.T) {
 
 	payload := map[string]any{"runtime": "node", "ttl": 3600}
 	body, _ := json.Marshal(payload)
-	resp, err := http.Post(srv.URL+"/api/sandboxes", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
+	resp := postSandbox(t, srv.URL, testutil.AuthHeader(t, pool), body)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusServiceUnavailable {

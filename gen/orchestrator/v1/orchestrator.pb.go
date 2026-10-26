@@ -7,14 +7,13 @@
 package orchestrator
 
 import (
-	reflect "reflect"
-	sync "sync"
-	unsafe "unsafe"
-
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
+	reflect "reflect"
+	sync "sync"
+	unsafe "unsafe"
 )
 
 const (
@@ -24,17 +23,91 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// SandboxState is the closed vocabulary a worker reports for a sandbox. It is
+// the worker's view of the VM, not firecracker-go-sdk's InstanceInfo.State.
+type SandboxState int32
+
+const (
+	SandboxState_SANDBOX_STATE_UNSPECIFIED SandboxState = 0
+	// Tracked by the worker, VM not running yet (includes Firecracker's
+	// "Not started").
+	SandboxState_SANDBOX_STATE_STARTING SandboxState = 1
+	SandboxState_SANDBOX_STATE_RUNNING  SandboxState = 2
+	SandboxState_SANDBOX_STATE_PAUSED   SandboxState = 3
+	// The Firecracker process is alive but its API could not be queried.
+	SandboxState_SANDBOX_STATE_UNKNOWN SandboxState = 4
+	// The Firecracker process exited (Machine.Wait returned). The worker keeps
+	// the sandbox until the orchestrator asks it to remove it.
+	SandboxState_SANDBOX_STATE_DEAD SandboxState = 5
+)
+
+// Enum value maps for SandboxState.
+var (
+	SandboxState_name = map[int32]string{
+		0: "SANDBOX_STATE_UNSPECIFIED",
+		1: "SANDBOX_STATE_STARTING",
+		2: "SANDBOX_STATE_RUNNING",
+		3: "SANDBOX_STATE_PAUSED",
+		4: "SANDBOX_STATE_UNKNOWN",
+		5: "SANDBOX_STATE_DEAD",
+	}
+	SandboxState_value = map[string]int32{
+		"SANDBOX_STATE_UNSPECIFIED": 0,
+		"SANDBOX_STATE_STARTING":    1,
+		"SANDBOX_STATE_RUNNING":     2,
+		"SANDBOX_STATE_PAUSED":      3,
+		"SANDBOX_STATE_UNKNOWN":     4,
+		"SANDBOX_STATE_DEAD":        5,
+	}
+)
+
+func (x SandboxState) Enum() *SandboxState {
+	p := new(SandboxState)
+	*p = x
+	return p
+}
+
+func (x SandboxState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SandboxState) Descriptor() protoreflect.EnumDescriptor {
+	return file_orchestrator_v1_orchestrator_proto_enumTypes[0].Descriptor()
+}
+
+func (SandboxState) Type() protoreflect.EnumType {
+	return &file_orchestrator_v1_orchestrator_proto_enumTypes[0]
+}
+
+func (x SandboxState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SandboxState.Descriptor instead.
+func (SandboxState) EnumDescriptor() ([]byte, []int) {
+	return file_orchestrator_v1_orchestrator_proto_rawDescGZIP(), []int{0}
+}
+
 type WorkerHeartbeat struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	WorkerId      string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
-	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
-	Address       string                 `protobuf:"bytes,3,opt,name=address,proto3" json:"address,omitempty"`
-	Port          int32                  `protobuf:"varint,4,opt,name=port,proto3" json:"port,omitempty"`
-	Capacity      int32                  `protobuf:"varint,5,opt,name=capacity,proto3" json:"capacity,omitempty"`
-	CpuBudget     int32                  `protobuf:"varint,6,opt,name=cpu_budget,json=cpuBudget,proto3" json:"cpu_budget,omitempty"`
-	MemBudget     int32                  `protobuf:"varint,7,opt,name=mem_budget,json=memBudget,proto3" json:"mem_budget,omitempty"`
-	CpuUsage      int32                  `protobuf:"varint,8,opt,name=cpu_usage,json=cpuUsage,proto3" json:"cpu_usage,omitempty"`
-	MemUsage      int32                  `protobuf:"varint,9,opt,name=mem_usage,json=memUsage,proto3" json:"mem_usage,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	WorkerId     string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	Status       string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	Address      string                 `protobuf:"bytes,3,opt,name=address,proto3" json:"address,omitempty"`
+	Port         int32                  `protobuf:"varint,4,opt,name=port,proto3" json:"port,omitempty"`
+	Capacity     int32                  `protobuf:"varint,5,opt,name=capacity,proto3" json:"capacity,omitempty"`
+	CpuBudget    int32                  `protobuf:"varint,6,opt,name=cpu_budget,json=cpuBudget,proto3" json:"cpu_budget,omitempty"`
+	MemBudget    int32                  `protobuf:"varint,7,opt,name=mem_budget,json=memBudget,proto3" json:"mem_budget,omitempty"`
+	CpuUsage     int32                  `protobuf:"varint,8,opt,name=cpu_usage,json=cpuUsage,proto3" json:"cpu_usage,omitempty"`
+	MemUsage     int32                  `protobuf:"varint,9,opt,name=mem_usage,json=memUsage,proto3" json:"mem_usage,omitempty"`
+	FencingToken int64                  `protobuf:"varint,10,opt,name=fencing_token,json=fencingToken,proto3" json:"fencing_token,omitempty"`
+	// inventory_complete distinguishes an empty inventory (the worker hosts no
+	// sandbox) from an absent one (the worker did not report any). The
+	// orchestrator only reconciles sandboxes when it is true.
+	InventoryComplete bool `protobuf:"varint,11,opt,name=inventory_complete,json=inventoryComplete,proto3" json:"inventory_complete,omitempty"`
+	// sandboxes lists every sandbox the worker currently tracks with its last
+	// known state, read from the sandbox manager's snapshot (no probe of the
+	// VMs on the heartbeat path).
+	Sandboxes     []*SandboxInventoryEntry `protobuf:"bytes,14,rep,name=sandboxes,proto3" json:"sandboxes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -132,22 +205,97 @@ func (x *WorkerHeartbeat) GetMemUsage() int32 {
 	return 0
 }
 
+func (x *WorkerHeartbeat) GetFencingToken() int64 {
+	if x != nil {
+		return x.FencingToken
+	}
+	return 0
+}
+
+func (x *WorkerHeartbeat) GetInventoryComplete() bool {
+	if x != nil {
+		return x.InventoryComplete
+	}
+	return false
+}
+
+func (x *WorkerHeartbeat) GetSandboxes() []*SandboxInventoryEntry {
+	if x != nil {
+		return x.Sandboxes
+	}
+	return nil
+}
+
+type SandboxInventoryEntry struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SandboxId     string                 `protobuf:"bytes,1,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"`
+	State         SandboxState           `protobuf:"varint,2,opt,name=state,proto3,enum=orchestrator.v1.SandboxState" json:"state,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SandboxInventoryEntry) Reset() {
+	*x = SandboxInventoryEntry{}
+	mi := &file_orchestrator_v1_orchestrator_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SandboxInventoryEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SandboxInventoryEntry) ProtoMessage() {}
+
+func (x *SandboxInventoryEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_orchestrator_v1_orchestrator_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SandboxInventoryEntry.ProtoReflect.Descriptor instead.
+func (*SandboxInventoryEntry) Descriptor() ([]byte, []int) {
+	return file_orchestrator_v1_orchestrator_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *SandboxInventoryEntry) GetSandboxId() string {
+	if x != nil {
+		return x.SandboxId
+	}
+	return ""
+}
+
+func (x *SandboxInventoryEntry) GetState() SandboxState {
+	if x != nil {
+		return x.State
+	}
+	return SandboxState_SANDBOX_STATE_UNSPECIFIED
+}
+
 type SandboxEvent struct {
-	state     protoimpl.MessageState `protogen:"open.v1"`
-	Id        string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	SandboxId string                 `protobuf:"bytes,2,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"`
-	WorkerId  string                 `protobuf:"bytes,4,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
-	// Instance state, matching firecracker-go-sdk's InstanceInfo.State
-	// ("Not started" | "Running" | "Paused").
-	State         string                 `protobuf:"bytes,5,opt,name=state,proto3" json:"state,omitempty"`
-	OccurredAt    *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Id         string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	SandboxId  string                 `protobuf:"bytes,2,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"`
+	WorkerId   string                 `protobuf:"bytes,4,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	OccurredAt *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
+	// fencing_token identifies the worker incarnation that emitted the event.
+	// Events from a superseded incarnation are rejected.
+	FencingToken int64 `protobuf:"varint,10,opt,name=fencing_token,json=fencingToken,proto3" json:"fencing_token,omitempty"`
+	// state is the sandbox's new state. Events are only sent on change.
+	State         SandboxState `protobuf:"varint,11,opt,name=state,proto3,enum=orchestrator.v1.SandboxState" json:"state,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SandboxEvent) Reset() {
 	*x = SandboxEvent{}
-	mi := &file_orchestrator_v1_orchestrator_proto_msgTypes[1]
+	mi := &file_orchestrator_v1_orchestrator_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -159,7 +307,7 @@ func (x *SandboxEvent) String() string {
 func (*SandboxEvent) ProtoMessage() {}
 
 func (x *SandboxEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_orchestrator_v1_orchestrator_proto_msgTypes[1]
+	mi := &file_orchestrator_v1_orchestrator_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -172,7 +320,7 @@ func (x *SandboxEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SandboxEvent.ProtoReflect.Descriptor instead.
 func (*SandboxEvent) Descriptor() ([]byte, []int) {
-	return file_orchestrator_v1_orchestrator_proto_rawDescGZIP(), []int{1}
+	return file_orchestrator_v1_orchestrator_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *SandboxEvent) GetId() string {
@@ -196,13 +344,6 @@ func (x *SandboxEvent) GetWorkerId() string {
 	return ""
 }
 
-func (x *SandboxEvent) GetState() string {
-	if x != nil {
-		return x.State
-	}
-	return ""
-}
-
 func (x *SandboxEvent) GetOccurredAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.OccurredAt
@@ -210,11 +351,69 @@ func (x *SandboxEvent) GetOccurredAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *SandboxEvent) GetFencingToken() int64 {
+	if x != nil {
+		return x.FencingToken
+	}
+	return 0
+}
+
+func (x *SandboxEvent) GetState() SandboxState {
+	if x != nil {
+		return x.State
+	}
+	return SandboxState_SANDBOX_STATE_UNSPECIFIED
+}
+
+type WorkerRegistration struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	FencingToken  int64                  `protobuf:"varint,1,opt,name=fencing_token,json=fencingToken,proto3" json:"fencing_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkerRegistration) Reset() {
+	*x = WorkerRegistration{}
+	mi := &file_orchestrator_v1_orchestrator_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkerRegistration) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkerRegistration) ProtoMessage() {}
+
+func (x *WorkerRegistration) ProtoReflect() protoreflect.Message {
+	mi := &file_orchestrator_v1_orchestrator_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkerRegistration.ProtoReflect.Descriptor instead.
+func (*WorkerRegistration) Descriptor() ([]byte, []int) {
+	return file_orchestrator_v1_orchestrator_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *WorkerRegistration) GetFencingToken() int64 {
+	if x != nil {
+		return x.FencingToken
+	}
+	return 0
+}
+
 var File_orchestrator_v1_orchestrator_proto protoreflect.FileDescriptor
 
 const file_orchestrator_v1_orchestrator_proto_rawDesc = "" +
 	"\n" +
-	"\"orchestrator/v1/orchestrator.proto\x12\x0forchestrator.v1\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x88\x02\n" +
+	"\"orchestrator/v1/orchestrator.proto\x12\x0forchestrator.v1\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xbb\x03\n" +
 	"\x0fWorkerHeartbeat\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\x12\x18\n" +
@@ -226,18 +425,38 @@ const file_orchestrator_v1_orchestrator_proto_rawDesc = "" +
 	"\n" +
 	"mem_budget\x18\a \x01(\x05R\tmemBudget\x12\x1b\n" +
 	"\tcpu_usage\x18\b \x01(\x05R\bcpuUsage\x12\x1b\n" +
-	"\tmem_usage\x18\t \x01(\x05R\bmemUsage\"\xf1\x01\n" +
+	"\tmem_usage\x18\t \x01(\x05R\bmemUsage\x12#\n" +
+	"\rfencing_token\x18\n" +
+	" \x01(\x03R\ffencingToken\x12-\n" +
+	"\x12inventory_complete\x18\v \x01(\bR\x11inventoryComplete\x12D\n" +
+	"\tsandboxes\x18\x0e \x03(\v2&.orchestrator.v1.SandboxInventoryEntryR\tsandboxesJ\x04\b\f\x10\rJ\x04\b\r\x10\x0eR\vsandbox_ids\"k\n" +
+	"\x15SandboxInventoryEntry\x12\x1d\n" +
+	"\n" +
+	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x123\n" +
+	"\x05state\x18\x02 \x01(\x0e2\x1d.orchestrator.v1.SandboxStateR\x05state\"\xbb\x02\n" +
 	"\fSandboxEvent\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x02 \x01(\tR\tsandboxId\x12\x1b\n" +
-	"\tworker_id\x18\x04 \x01(\tR\bworkerId\x12\x14\n" +
-	"\x05state\x18\x05 \x01(\tR\x05state\x12;\n" +
+	"\tworker_id\x18\x04 \x01(\tR\bworkerId\x12;\n" +
 	"\voccurred_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"occurredAtJ\x04\b\x03\x10\x04J\x04\b\x06\x10\aJ\x04\b\a\x10\bJ\x04\b\b\x10\tR\fcontainer_idR\x06actionR\bactor_idR\n" +
-	"attributes2\xb5\x01\n" +
+	"occurredAt\x12#\n" +
+	"\rfencing_token\x18\n" +
+	" \x01(\x03R\ffencingToken\x123\n" +
+	"\x05state\x18\v \x01(\x0e2\x1d.orchestrator.v1.SandboxStateR\x05stateJ\x04\b\x03\x10\x04J\x04\b\x06\x10\aJ\x04\b\a\x10\bJ\x04\b\b\x10\tJ\x04\b\x05\x10\x06R\fcontainer_idR\x06actionR\bactor_idR\n" +
+	"attributes\"9\n" +
+	"\x12WorkerRegistration\x12#\n" +
+	"\rfencing_token\x18\x01 \x01(\x03R\ffencingToken*\xb1\x01\n" +
+	"\fSandboxState\x12\x1d\n" +
+	"\x19SANDBOX_STATE_UNSPECIFIED\x10\x00\x12\x1a\n" +
+	"\x16SANDBOX_STATE_STARTING\x10\x01\x12\x19\n" +
+	"\x15SANDBOX_STATE_RUNNING\x10\x02\x12\x18\n" +
+	"\x14SANDBOX_STATE_PAUSED\x10\x03\x12\x19\n" +
+	"\x15SANDBOX_STATE_UNKNOWN\x10\x04\x12\x16\n" +
+	"\x12SANDBOX_STATE_DEAD\x10\x052\x8e\x02\n" +
 	"\x13OrchestratorService\x12K\n" +
-	"\x12IngestSandboxEvent\x12\x1d.orchestrator.v1.SandboxEvent\x1a\x16.google.protobuf.Empty\x12Q\n" +
+	"\x12IngestSandboxEvent\x12\x1d.orchestrator.v1.SandboxEvent\x1a\x16.google.protobuf.Empty\x12W\n" +
+	"\x0eRegisterWorker\x12 .orchestrator.v1.WorkerHeartbeat\x1a#.orchestrator.v1.WorkerRegistration\x12Q\n" +
 	"\x15ReportWorkerHeartbeat\x12 .orchestrator.v1.WorkerHeartbeat\x1a\x16.google.protobuf.EmptyB8Z6github/nallanos/fire2/gen/orchestrator/v1;orchestratorb\x06proto3"
 
 var (
@@ -252,24 +471,33 @@ func file_orchestrator_v1_orchestrator_proto_rawDescGZIP() []byte {
 	return file_orchestrator_v1_orchestrator_proto_rawDescData
 }
 
-var file_orchestrator_v1_orchestrator_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_orchestrator_v1_orchestrator_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_orchestrator_v1_orchestrator_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_orchestrator_v1_orchestrator_proto_goTypes = []any{
-	(*WorkerHeartbeat)(nil),       // 0: orchestrator.v1.WorkerHeartbeat
-	(*SandboxEvent)(nil),          // 1: orchestrator.v1.SandboxEvent
-	(*timestamppb.Timestamp)(nil), // 2: google.protobuf.Timestamp
-	(*emptypb.Empty)(nil),         // 3: google.protobuf.Empty
+	(SandboxState)(0),             // 0: orchestrator.v1.SandboxState
+	(*WorkerHeartbeat)(nil),       // 1: orchestrator.v1.WorkerHeartbeat
+	(*SandboxInventoryEntry)(nil), // 2: orchestrator.v1.SandboxInventoryEntry
+	(*SandboxEvent)(nil),          // 3: orchestrator.v1.SandboxEvent
+	(*WorkerRegistration)(nil),    // 4: orchestrator.v1.WorkerRegistration
+	(*timestamppb.Timestamp)(nil), // 5: google.protobuf.Timestamp
+	(*emptypb.Empty)(nil),         // 6: google.protobuf.Empty
 }
 var file_orchestrator_v1_orchestrator_proto_depIdxs = []int32{
-	2, // 0: orchestrator.v1.SandboxEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	1, // 1: orchestrator.v1.OrchestratorService.IngestSandboxEvent:input_type -> orchestrator.v1.SandboxEvent
-	0, // 2: orchestrator.v1.OrchestratorService.ReportWorkerHeartbeat:input_type -> orchestrator.v1.WorkerHeartbeat
-	3, // 3: orchestrator.v1.OrchestratorService.IngestSandboxEvent:output_type -> google.protobuf.Empty
-	3, // 4: orchestrator.v1.OrchestratorService.ReportWorkerHeartbeat:output_type -> google.protobuf.Empty
-	3, // [3:5] is the sub-list for method output_type
-	1, // [1:3] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	2, // 0: orchestrator.v1.WorkerHeartbeat.sandboxes:type_name -> orchestrator.v1.SandboxInventoryEntry
+	0, // 1: orchestrator.v1.SandboxInventoryEntry.state:type_name -> orchestrator.v1.SandboxState
+	5, // 2: orchestrator.v1.SandboxEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	0, // 3: orchestrator.v1.SandboxEvent.state:type_name -> orchestrator.v1.SandboxState
+	3, // 4: orchestrator.v1.OrchestratorService.IngestSandboxEvent:input_type -> orchestrator.v1.SandboxEvent
+	1, // 5: orchestrator.v1.OrchestratorService.RegisterWorker:input_type -> orchestrator.v1.WorkerHeartbeat
+	1, // 6: orchestrator.v1.OrchestratorService.ReportWorkerHeartbeat:input_type -> orchestrator.v1.WorkerHeartbeat
+	6, // 7: orchestrator.v1.OrchestratorService.IngestSandboxEvent:output_type -> google.protobuf.Empty
+	4, // 8: orchestrator.v1.OrchestratorService.RegisterWorker:output_type -> orchestrator.v1.WorkerRegistration
+	6, // 9: orchestrator.v1.OrchestratorService.ReportWorkerHeartbeat:output_type -> google.protobuf.Empty
+	7, // [7:10] is the sub-list for method output_type
+	4, // [4:7] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_orchestrator_v1_orchestrator_proto_init() }
@@ -282,13 +510,14 @@ func file_orchestrator_v1_orchestrator_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchestrator_v1_orchestrator_proto_rawDesc), len(file_orchestrator_v1_orchestrator_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   2,
+			NumEnums:      1,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_orchestrator_v1_orchestrator_proto_goTypes,
 		DependencyIndexes: file_orchestrator_v1_orchestrator_proto_depIdxs,
+		EnumInfos:         file_orchestrator_v1_orchestrator_proto_enumTypes,
 		MessageInfos:      file_orchestrator_v1_orchestrator_proto_msgTypes,
 	}.Build()
 	File_orchestrator_v1_orchestrator_proto = out.File

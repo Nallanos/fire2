@@ -5,7 +5,9 @@ package orchestrator
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -46,12 +48,19 @@ func sandboxStatus(t *testing.T, ctx context.Context, repo sandboxpkg.Repository
 	return sbx.Status
 }
 
-func ingestEvent(t *testing.T, ctx context.Context, srv *EventGRPCServer, sandboxID, state string) {
+// ingestEvent sends an event as worker "wk-test", which the test must have
+// registered (seedWorker) beforehand; the event carries its current token.
+func ingestEvent(t *testing.T, ctx context.Context, srv *EventGRPCServer, sandboxID string, state orchestratorv1.SandboxState) {
 	t.Helper()
-	_, err := srv.IngestSandboxEvent(ctx, &orchestratorv1.SandboxEvent{
-		SandboxId: sandboxID,
-		WorkerId:  "wk-test",
-		State:     state,
+	w, err := srv.workerRepo.Get(ctx, "wk-test")
+	if err != nil {
+		t.Fatalf("worker wk-test must be seeded before ingesting events: %v", err)
+	}
+	_, err = srv.IngestSandboxEvent(ctx, &orchestratorv1.SandboxEvent{
+		SandboxId:    sandboxID,
+		WorkerId:     "wk-test",
+		State:        state,
+		FencingToken: w.FencingToken,
 	})
 	if err != nil {
 		t.Fatalf("IngestSandboxEvent state=%s: %v", state, err)
@@ -60,12 +69,11 @@ func ingestEvent(t *testing.T, ctx context.Context, srv *EventGRPCServer, sandbo
 
 // H1: die event while status=pending → status unchanged, "ignored" logged.
 //
-// Skipped: statusTransitionForState has no failure state anymore (see its
-// doc comment) — firecracker-go-sdk's InstanceInfo.State never reports
-// "died"/"crashed" the way Docker's die/kill/oom did, so there's nothing
-// left to guard here. Re-enable once a real failure signal exists.
+// Skipped: statusTransitionForState has no failure state (see its doc
+// comment) — a DEAD sandbox is failed by the heartbeat inventory, which is
+// the authoritative path; events are best-effort.
 func TestEventGuard_DieWhilePending(t *testing.T) {
-	t.Skip("no Firecracker equivalent to Docker's die event — see statusTransitionForState")
+	t.Skip("DEAD is acted on by the heartbeat inventory, not events — see statusTransitionForState")
 	ctx := context.Background()
 	pool := testutil.SetupPostgres(t, ctx)
 	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
@@ -79,7 +87,7 @@ func TestEventGuard_DieWhilePending(t *testing.T) {
 	defer log.SetOutput(os.Stderr)
 
 	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo)
-	ingestEvent(t, ctx, srv, "sbx-h1", "die")
+	ingestEvent(t, ctx, srv, "sbx-h1", orchestratorv1.SandboxState_SANDBOX_STATE_DEAD)
 
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h1") != sandboxpkg.StatusPending {
 		t.Fatalf("expected pending unchanged")
@@ -93,7 +101,7 @@ func TestEventGuard_DieWhilePending(t *testing.T) {
 //
 // Skipped: see TestEventGuard_DieWhilePending.
 func TestEventGuard_DieWhileScheduling(t *testing.T) {
-	t.Skip("no Firecracker equivalent to Docker's die event — see statusTransitionForState")
+	t.Skip("DEAD is acted on by the heartbeat inventory, not events — see statusTransitionForState")
 	ctx := context.Background()
 	pool := testutil.SetupPostgres(t, ctx)
 	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
@@ -107,7 +115,7 @@ func TestEventGuard_DieWhileScheduling(t *testing.T) {
 	defer log.SetOutput(os.Stderr)
 
 	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo)
-	ingestEvent(t, ctx, srv, "sbx-h2", "die")
+	ingestEvent(t, ctx, srv, "sbx-h2", orchestratorv1.SandboxState_SANDBOX_STATE_DEAD)
 
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h2") != sandboxpkg.StatusScheduling {
 		t.Fatalf("expected scheduling unchanged")
@@ -121,7 +129,7 @@ func TestEventGuard_DieWhileScheduling(t *testing.T) {
 //
 // Skipped: see TestEventGuard_DieWhilePending.
 func TestEventGuard_DieWhileAssigned(t *testing.T) {
-	t.Skip("no Firecracker equivalent to Docker's die event — see statusTransitionForState")
+	t.Skip("DEAD is acted on by the heartbeat inventory, not events — see statusTransitionForState")
 	ctx := context.Background()
 	pool := testutil.SetupPostgres(t, ctx)
 	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
@@ -135,7 +143,7 @@ func TestEventGuard_DieWhileAssigned(t *testing.T) {
 	defer log.SetOutput(os.Stderr)
 
 	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo)
-	ingestEvent(t, ctx, srv, "sbx-h3", "die")
+	ingestEvent(t, ctx, srv, "sbx-h3", orchestratorv1.SandboxState_SANDBOX_STATE_DEAD)
 
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h3") != sandboxpkg.StatusAssigned {
 		t.Fatalf("expected assigned unchanged")
@@ -153,17 +161,19 @@ func TestEventGuard_RunningWhileStarting(t *testing.T) {
 	eventRepo := NewEventRepository(pool)
 	workerRepo := workerpkg.NewPostgresRepository(pool)
 
-	seedSandbox(t, ctx, sandboxRepo, "sbx-h4", sandboxpkg.StatusStarting)
+	seedWorker(t, ctx, workerRepo, "wk-test")
+	hostID := "wk-test"
+	seedSandboxForJob(t, ctx, sandboxRepo, "sbx-h4", sandboxpkg.StatusStarting, &hostID)
 
 	var buf bytes.Buffer
 	log.SetOutput(&buf)
 	defer log.SetOutput(os.Stderr)
 
 	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo)
-	ingestEvent(t, ctx, srv, "sbx-h4", "Running")
+	ingestEvent(t, ctx, srv, "sbx-h4", orchestratorv1.SandboxState_SANDBOX_STATE_RUNNING)
 
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h4") != sandboxpkg.StatusRunning {
-		t.Fatalf("expected running after Running-state event")
+		t.Fatalf("expected running after RUNNING event")
 	}
 	if strings.Contains(buf.String(), "ignored sandbox event") {
 		t.Fatalf("unexpected 'ignored' log for valid running transition")
@@ -174,7 +184,7 @@ func TestEventGuard_RunningWhileStarting(t *testing.T) {
 //
 // Skipped: see TestEventGuard_DieWhilePending.
 func TestEventGuard_DieWhileRunning(t *testing.T) {
-	t.Skip("no Firecracker equivalent to Docker's die event — see statusTransitionForState")
+	t.Skip("DEAD is acted on by the heartbeat inventory, not events — see statusTransitionForState")
 	ctx := context.Background()
 	pool := testutil.SetupPostgres(t, ctx)
 	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
@@ -184,7 +194,7 @@ func TestEventGuard_DieWhileRunning(t *testing.T) {
 	seedSandbox(t, ctx, sandboxRepo, "sbx-h5", sandboxpkg.StatusRunning)
 
 	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo)
-	ingestEvent(t, ctx, srv, "sbx-h5", "die")
+	ingestEvent(t, ctx, srv, "sbx-h5", orchestratorv1.SandboxState_SANDBOX_STATE_DEAD)
 
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h5") != sandboxpkg.StatusFailed {
 		t.Fatalf("expected failed after die event while running")
@@ -195,7 +205,7 @@ func TestEventGuard_DieWhileRunning(t *testing.T) {
 //
 // Skipped: see TestEventGuard_DieWhilePending.
 func TestEventGuard_DieWhileFailed(t *testing.T) {
-	t.Skip("no Firecracker equivalent to Docker's die event — see statusTransitionForState")
+	t.Skip("DEAD is acted on by the heartbeat inventory, not events — see statusTransitionForState")
 	ctx := context.Background()
 	pool := testutil.SetupPostgres(t, ctx)
 	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
@@ -209,7 +219,7 @@ func TestEventGuard_DieWhileFailed(t *testing.T) {
 	defer log.SetOutput(os.Stderr)
 
 	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo)
-	ingestEvent(t, ctx, srv, "sbx-h6", "die")
+	ingestEvent(t, ctx, srv, "sbx-h6", orchestratorv1.SandboxState_SANDBOX_STATE_DEAD)
 
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h6") != sandboxpkg.StatusFailed {
 		t.Fatalf("expected failed unchanged")
@@ -226,7 +236,7 @@ func TestEventGuard_DieWhileFailed(t *testing.T) {
 // TestEventGuard_DieWhilePending). The "start"/Running half alone is
 // already covered by TestEventGuard_RunningWhileStarting.
 func TestEventGuard_OutOfOrder_DieBeforeStart(t *testing.T) {
-	t.Skip("no Firecracker equivalent to Docker's die event — see statusTransitionForState")
+	t.Skip("DEAD is acted on by the heartbeat inventory, not events — see statusTransitionForState")
 	ctx := context.Background()
 	pool := testutil.SetupPostgres(t, ctx)
 	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
@@ -243,7 +253,7 @@ func TestEventGuard_OutOfOrder_DieBeforeStart(t *testing.T) {
 	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo)
 
 	// die arrives while pending → rejected
-	ingestEvent(t, ctx, srv, "sbx-h7", "die")
+	ingestEvent(t, ctx, srv, "sbx-h7", orchestratorv1.SandboxState_SANDBOX_STATE_DEAD)
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h7") != sandboxpkg.StatusPending {
 		t.Fatalf("expected pending after rejected die")
 	}
@@ -256,19 +266,19 @@ func TestEventGuard_OutOfOrder_DieBeforeStart(t *testing.T) {
 
 	// start arrives while starting → accepted
 	buf.Reset()
-	ingestEvent(t, ctx, srv, "sbx-h7", "Running")
+	ingestEvent(t, ctx, srv, "sbx-h7", orchestratorv1.SandboxState_SANDBOX_STATE_RUNNING)
 	if sandboxStatus(t, ctx, sandboxRepo, "sbx-h7") != sandboxpkg.StatusRunning {
-		t.Fatalf("expected running after Running-state event in starting state")
+		t.Fatalf("expected running after RUNNING event in starting state")
 	}
 	if strings.Contains(buf.String(), "ignored sandbox event") {
 		t.Fatalf("running from starting should not be ignored")
 	}
 }
 
-// seedWorker inserts a worker row directly for heartbeat handler tests.
+// seedWorker registers a worker row directly for heartbeat handler tests.
 func seedWorker(t *testing.T, ctx context.Context, repo workerpkg.Repository, id string) workerpkg.Worker {
 	t.Helper()
-	w, err := repo.Create(ctx, workerpkg.Worker{
+	w, err := repo.Register(ctx, workerpkg.Worker{
 		ID:       id,
 		Status:   workerpkg.WorkerStatusActive,
 		Address:  "127.0.0.1",
@@ -280,6 +290,20 @@ func seedWorker(t *testing.T, ctx context.Context, repo workerpkg.Repository, id
 		t.Fatalf("seed worker %s: %v", id, err)
 	}
 	return w
+}
+
+func registerWorker(t *testing.T, ctx context.Context, srv *EventGRPCServer, id string) int64 {
+	t.Helper()
+	registration, err := srv.RegisterWorker(ctx, &orchestratorv1.WorkerHeartbeat{
+		WorkerId: id, Status: "active", Address: "10.0.0.2", Port: 50051, Capacity: 4,
+	})
+	if err != nil {
+		t.Fatalf("RegisterWorker %s: %v", id, err)
+	}
+	if registration.GetFencingToken() <= 0 {
+		t.Fatalf("RegisterWorker %s returned invalid fencing token %d", id, registration.GetFencingToken())
+	}
+	return registration.GetFencingToken()
 }
 
 func workerFromRepo(t *testing.T, ctx context.Context, repo workerpkg.Repository, id string) workerpkg.Worker {
@@ -299,19 +323,20 @@ func TestHeartbeat_UpdatesExistingWorker(t *testing.T) {
 	eventRepo := NewEventRepository(pool)
 	workerRepo := workerpkg.NewPostgresRepository(pool)
 
-	seedWorker(t, ctx, workerRepo, "wk-w1")
+	registered := seedWorker(t, ctx, workerRepo, "wk-w1")
 	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo)
 
 	_, err := srv.ReportWorkerHeartbeat(ctx, &orchestratorv1.WorkerHeartbeat{
-		WorkerId:  "wk-w1",
-		Status:    "active",
-		Address:   "10.0.0.1",
-		Port:      50052,
-		Capacity:  8,
-		CpuBudget: 8,
-		MemBudget: 16384,
-		CpuUsage:  2,
-		MemUsage:  4096,
+		WorkerId:     "wk-w1",
+		Status:       "active",
+		Address:      "10.0.0.1",
+		Port:         50052,
+		Capacity:     8,
+		CpuBudget:    8,
+		MemBudget:    16384,
+		CpuUsage:     2,
+		MemUsage:     4096,
+		FencingToken: registered.FencingToken,
 	})
 	if err != nil {
 		t.Fatalf("ReportWorkerHeartbeat: %v", err)
@@ -330,10 +355,13 @@ func TestHeartbeat_UpdatesExistingWorker(t *testing.T) {
 	if w.Last_heartbeat.IsZero() {
 		t.Error("last_heartbeat should be non-zero after heartbeat")
 	}
+	if w.FencingToken != registered.FencingToken {
+		t.Errorf("fencing token changed on heartbeat: want %d, got %d", registered.FencingToken, w.FencingToken)
+	}
 }
 
-// W2: heartbeat for a brand-new worker (not yet in DB) → self-registration via Create.
-func TestHeartbeat_SelfRegisters_NewWorker(t *testing.T) {
+// W2: registration creates a new worker and returns the persisted token.
+func TestRegisterWorker_CreatesNewWorker(t *testing.T) {
 	ctx := context.Background()
 	pool := testutil.SetupPostgres(t, ctx)
 	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
@@ -342,7 +370,7 @@ func TestHeartbeat_SelfRegisters_NewWorker(t *testing.T) {
 
 	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo)
 
-	_, err := srv.ReportWorkerHeartbeat(ctx, &orchestratorv1.WorkerHeartbeat{
+	registration, err := srv.RegisterWorker(ctx, &orchestratorv1.WorkerHeartbeat{
 		WorkerId:  "wk-w2-new",
 		Status:    "active",
 		Address:   "192.168.1.5",
@@ -352,7 +380,10 @@ func TestHeartbeat_SelfRegisters_NewWorker(t *testing.T) {
 		MemBudget: 8192,
 	})
 	if err != nil {
-		t.Fatalf("ReportWorkerHeartbeat for new worker: %v", err)
+		t.Fatalf("RegisterWorker for new worker: %v", err)
+	}
+	if registration.GetFencingToken() <= 0 {
+		t.Fatalf("expected positive fencing token, got %d", registration.GetFencingToken())
 	}
 
 	w := workerFromRepo(t, ctx, workerRepo, "wk-w2-new")
@@ -362,29 +393,25 @@ func TestHeartbeat_SelfRegisters_NewWorker(t *testing.T) {
 	if w.Status != workerpkg.WorkerStatusActive {
 		t.Errorf("status: want active, got %q", w.Status)
 	}
-}
-
-// W3: heartbeat with empty worker_id → InvalidArgument gRPC error.
-func TestHeartbeat_EmptyWorkerID_ReturnsInvalidArgument(t *testing.T) {
-	ctx := context.Background()
-	pool := testutil.SetupPostgres(t, ctx)
-	sandboxRepo := sandboxpkg.NewPostgresRepository(pool)
-	eventRepo := NewEventRepository(pool)
-	workerRepo := workerpkg.NewPostgresRepository(pool)
-
-	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo)
-
-	_, err := srv.ReportWorkerHeartbeat(ctx, &orchestratorv1.WorkerHeartbeat{WorkerId: "   "})
-	if err == nil {
-		t.Fatal("expected error for empty worker_id, got nil")
-	}
-	st, ok := status.FromError(err)
-	if !ok || st.Code() != codes.InvalidArgument {
-		t.Errorf("want InvalidArgument, got %v", err)
+	if w.FencingToken != registration.GetFencingToken() {
+		t.Errorf("persisted fencing token: want %d, got %d", registration.GetFencingToken(), w.FencingToken)
 	}
 }
 
-// W4: second heartbeat from the same new worker → Update succeeds (no duplicate create).
+// W3: both RPCs reject a missing worker identity before touching storage.
+func TestWorkerRPC_EmptyWorkerID_ReturnsInvalidArgument(t *testing.T) {
+	srv := &EventGRPCServer{}
+	for _, req := range []*orchestratorv1.WorkerHeartbeat{nil, &orchestratorv1.WorkerHeartbeat{WorkerId: "   "}} {
+		if _, err := srv.RegisterWorker(context.Background(), req); status.Code(err) != codes.InvalidArgument {
+			t.Errorf("RegisterWorker(%v): want InvalidArgument, got %v", req, err)
+		}
+		if _, err := srv.ReportWorkerHeartbeat(context.Background(), req); status.Code(err) != codes.InvalidArgument {
+			t.Errorf("ReportWorkerHeartbeat(%v): want InvalidArgument, got %v", req, err)
+		}
+	}
+}
+
+// W4: repeated heartbeats with a current token update the same row.
 func TestHeartbeat_SecondHeartbeat_Updates(t *testing.T) {
 	ctx := context.Background()
 	pool := testutil.SetupPostgres(t, ctx)
@@ -393,9 +420,10 @@ func TestHeartbeat_SecondHeartbeat_Updates(t *testing.T) {
 	workerRepo := workerpkg.NewPostgresRepository(pool)
 
 	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo)
+	token := registerWorker(t, ctx, srv, "wk-w4")
 
 	hb := &orchestratorv1.WorkerHeartbeat{
-		WorkerId: "wk-w4", Status: "active", Address: "10.0.0.2", Port: 50051, Capacity: 4,
+		WorkerId: "wk-w4", Status: "active", Address: "10.0.0.2", Port: 50051, Capacity: 4, FencingToken: token,
 	}
 	if _, err := srv.ReportWorkerHeartbeat(ctx, hb); err != nil {
 		t.Fatalf("first heartbeat: %v", err)
@@ -410,6 +438,153 @@ func TestHeartbeat_SecondHeartbeat_Updates(t *testing.T) {
 	if w.Capacity != 6 {
 		t.Errorf("capacity after second heartbeat: want 6, got %d", w.Capacity)
 	}
+	if w.FencingToken != token {
+		t.Errorf("fencing token changed after heartbeats: want %d, got %d", token, w.FencingToken)
+	}
+}
+
+func TestHeartbeat_MissingToken_ReturnsInvalidArgument(t *testing.T) {
+	ctx := context.Background()
+	pool := testutil.SetupPostgres(t, ctx)
+	srv := NewEventGRPCServer(
+		sandboxpkg.NewPostgresRepository(pool), NewEventRepository(pool), workerpkg.NewPostgresRepository(pool),
+	)
+	registerWorker(t, ctx, srv, "wk-no-token")
+
+	_, err := srv.ReportWorkerHeartbeat(ctx, &orchestratorv1.WorkerHeartbeat{
+		WorkerId: "wk-no-token", Address: "should-not-persist",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("want InvalidArgument for missing token, got %v", err)
+	}
+}
+
+// A worker the database has no row for is told to register again (NotFound),
+// not refused for good: it is the database that is late.
+func TestHeartbeat_UnregisteredWorker_ReturnsNotFound(t *testing.T) {
+	ctx := context.Background()
+	pool := testutil.SetupPostgres(t, ctx)
+	workerRepo := workerpkg.NewPostgresRepository(pool)
+	srv := NewEventGRPCServer(
+		sandboxpkg.NewPostgresRepository(pool), NewEventRepository(pool), workerRepo,
+	)
+
+	_, err := srv.ReportWorkerHeartbeat(ctx, &orchestratorv1.WorkerHeartbeat{
+		WorkerId: "wk-unregistered", FencingToken: 1,
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("want NotFound for unregistered worker, got %v", err)
+	}
+	if _, err := workerRepo.Get(ctx, "wk-unregistered"); !errors.Is(err, workerpkg.ErrNotFound) {
+		t.Fatalf("unregistered heartbeat unexpectedly created worker: %v", err)
+	}
+
+	// It registers again, presenting the token it held: the new one is above it.
+	registration, err := srv.RegisterWorker(ctx, &orchestratorv1.WorkerHeartbeat{
+		WorkerId: "wk-unregistered", Status: "active", Address: "10.0.0.2", Port: 50051, Capacity: 4, FencingToken: 1,
+	})
+	if err != nil {
+		t.Fatalf("RegisterWorker: %v", err)
+	}
+	if registration.GetFencingToken() != 2 {
+		t.Fatalf("registration presenting token 1: want token 2, got %d", registration.GetFencingToken())
+	}
+	if _, err := srv.ReportWorkerHeartbeat(ctx, &orchestratorv1.WorkerHeartbeat{
+		WorkerId: "wk-unregistered", FencingToken: registration.GetFencingToken(), Status: "active",
+	}); err != nil {
+		t.Fatalf("heartbeat after registering again: %v", err)
+	}
+}
+
+// A database whose token fell behind the worker's (restored from an older
+// backup) says NotFound, so the worker registers again; a token behind the
+// database's is an older process, FailedPrecondition, final. Same for an
+// older process once the worker has registered again.
+func TestHeartbeat_DatabaseBehindTheWorker_ReturnsNotFound(t *testing.T) {
+	ctx := context.Background()
+	pool := testutil.SetupPostgres(t, ctx)
+	workerRepo := workerpkg.NewPostgresRepository(pool)
+	srv := NewEventGRPCServer(
+		sandboxpkg.NewPostgresRepository(pool), NewEventRepository(pool), workerRepo,
+	)
+
+	token := registerWorker(t, ctx, srv, "wk-restored")
+	beat := func(token int64) error {
+		_, err := srv.ReportWorkerHeartbeat(ctx, &orchestratorv1.WorkerHeartbeat{WorkerId: "wk-restored", FencingToken: token, Status: "active"})
+		return err
+	}
+	if err := beat(token); err != nil {
+		t.Fatalf("heartbeat with the current token: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE worker SET fencing_token = 0 WHERE id = 'wk-restored'`); err != nil {
+		t.Fatalf("lose the token: %v", err)
+	}
+	if err := beat(token); status.Code(err) != codes.NotFound {
+		t.Fatalf("token lost by the database: want NotFound, got %v", err)
+	}
+
+	registration, err := srv.RegisterWorker(ctx, &orchestratorv1.WorkerHeartbeat{
+		WorkerId: "wk-restored", Status: "active", Address: "10.0.0.2", Port: 50051, Capacity: 4, FencingToken: token,
+	})
+	if err != nil {
+		t.Fatalf("RegisterWorker: %v", err)
+	}
+	if registration.GetFencingToken() <= token {
+		t.Fatalf("new token %d must be above the one the worker held (%d)", registration.GetFencingToken(), token)
+	}
+	if err := beat(registration.GetFencingToken()); err != nil {
+		t.Fatalf("heartbeat after registering again: %v", err)
+	}
+	// The process that held the old token is now an older process.
+	if err := beat(token); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("old token after the worker registered again: want FailedPrecondition, got %v", err)
+	}
+}
+
+func TestHeartbeat_StaleTokenCannotModifyWorker(t *testing.T) {
+	ctx := context.Background()
+	pool := testutil.SetupPostgres(t, ctx)
+	workerRepo := workerpkg.NewPostgresRepository(pool)
+	srv := NewEventGRPCServer(
+		sandboxpkg.NewPostgresRepository(pool), NewEventRepository(pool), workerRepo,
+	)
+
+	oldToken := registerWorker(t, ctx, srv, "wk-rotated")
+	newToken := registerWorker(t, ctx, srv, "wk-rotated")
+	if newToken <= oldToken {
+		t.Fatalf("registration must advance fencing token: old=%d new=%d", oldToken, newToken)
+	}
+	rowSnapshot := func() string {
+		t.Helper()
+		var snapshot string
+		if err := pool.QueryRow(ctx, `SELECT to_jsonb(w)::text FROM worker AS w WHERE id = $1`, "wk-rotated").Scan(&snapshot); err != nil {
+			t.Fatalf("read worker row: %v", err)
+		}
+		return snapshot
+	}
+	before := rowSnapshot()
+
+	_, err := srv.ReportWorkerHeartbeat(ctx, &orchestratorv1.WorkerHeartbeat{
+		WorkerId: "wk-rotated", FencingToken: oldToken, Status: "inactive",
+		Address: "stale-address", Port: 7000, Capacity: 99,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("want FailedPrecondition for stale token, got %v", err)
+	}
+	if after := rowSnapshot(); after != before {
+		t.Fatalf("stale heartbeat modified worker row:\nbefore=%s\nafter=%s", before, after)
+	}
+
+	if _, err := srv.ReportWorkerHeartbeat(ctx, &orchestratorv1.WorkerHeartbeat{
+		WorkerId: "wk-rotated", FencingToken: newToken, Status: "active",
+		Address: "current-address", Port: 50051, Capacity: 6,
+	}); err != nil {
+		t.Fatalf("heartbeat with current token: %v", err)
+	}
+	if got := workerFromRepo(t, ctx, workerRepo, "wk-rotated"); got.Address != "current-address" {
+		t.Fatalf("current heartbeat did not update worker address: %q", got.Address)
+	}
 }
 
 func TestReportWorkerHeartbeat_LogsReceivedHeartbeat(t *testing.T) {
@@ -419,21 +594,31 @@ func TestReportWorkerHeartbeat_LogsReceivedHeartbeat(t *testing.T) {
 	eventRepo := NewEventRepository(pool)
 	workerRepo := workerpkg.NewPostgresRepository(pool)
 
+	// The heartbeat is logged by slog at Debug, below the default handler's
+	// level, so log.SetOutput would not see it. SetDefault also points the log
+	// package at the new handler: restore both.
 	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	defer log.SetOutput(os.Stderr)
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer func() {
+		slog.SetDefault(prev)
+		log.SetOutput(os.Stderr)
+		log.SetFlags(log.LstdFlags)
+	}()
 
 	srv := NewEventGRPCServer(sandboxRepo, eventRepo, workerRepo)
+	token := registerWorker(t, ctx, srv, "worker-hb")
 	_, err := srv.ReportWorkerHeartbeat(ctx, &orchestratorv1.WorkerHeartbeat{
-		WorkerId:  "worker-hb",
-		Status:    "healthy",
-		Address:   "127.0.0.1",
-		Port:      7001,
-		Capacity:  3,
-		CpuBudget: 80,
-		MemBudget: 512,
-		CpuUsage:  12,
-		MemUsage:  128,
+		WorkerId:     "worker-hb",
+		Status:       "healthy",
+		Address:      "127.0.0.1",
+		Port:         7001,
+		Capacity:     3,
+		CpuBudget:    80,
+		MemBudget:    512,
+		CpuUsage:     12,
+		MemUsage:     128,
+		FencingToken: token,
 	})
 	if err != nil {
 		t.Fatalf("ReportWorkerHeartbeat: %v", err)

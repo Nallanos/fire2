@@ -1,0 +1,33 @@
+---
+# Installs the Vector agent from the official static release tarball, pinned
+# to vector_version with its official sha256 (see defaults/main.yml). Same
+# approach as roles/fire2_worker/tasks/firecracker.yml: no apt repository.
+- name: Validate host architecture for the pinned Vector build
+  ansible.builtin.assert:
+    that:
+      - ansible_architecture == "x86_64"
+    fail_msg: "vector_checksum_x86_64 pins the x86_64 build; got {{ ansible_architecture }}"
+
+- name: Download Vector release tarball
+  ansible.builtin.get_url:
+    url: "https://github.com/vectordotdev/vector/releases/download/v{{ vector_version }}/vector-{{ vector_version }}-x86_64-unknown-linux-gnu.tar.gz"
+    dest: "/tmp/vector-{{ vector_version }}-x86_64-unknown-linux-gnu.tar.gz"
+    checksum: "{{ vector_checksum_x86_64 }}"
+    mode: "0644"
+
+- name: Extract Vector release tarball
+  ansible.builtin.unarchive:
+    src: "/tmp/vector-{{ vector_version }}-x86_64-unknown-linux-gnu.tar.gz"
+    dest: /tmp
+    remote_src: true
+    creates: /tmp/vector-x86_64-unknown-linux-gnu/bin/vector
+
+- name: Install Vector binary
+  ansible.builtin.copy:
+    src: /tmp/vector-x86_64-unknown-linux-gnu/bin/vector
+    dest: "{{ vector_bin }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+  notify: restart vector

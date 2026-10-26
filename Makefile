@@ -1,5 +1,4 @@
 GO ?= go
-PROTOC ?= protoc
 COMPOSE ?= docker compose
 DBMATE ?= dbmate
 
@@ -10,9 +9,31 @@ include make/sandbox.mk
 test:
 	$(GO) test ./...
 
+# Pinned code generators: the generated files embed these versions in their
+# headers, so using other ones rewrites gen/ wholesale. They are installed under
+# .tools/ (gitignored) and never taken from the PATH.
+# protoc 21.12 reports itself as libprotoc 3.21.12.
+PROTOC_VERSION             ?= 21.12
+PROTOC_GEN_GO_VERSION      ?= v1.36.11
+PROTOC_GEN_GO_GRPC_VERSION ?= v1.6.2
+TOOLS_DIR := $(CURDIR)/.tools
+PROTOC    := $(TOOLS_DIR)/bin/protoc
+PROTOC_OS := $(if $(filter Darwin,$(shell uname -s)),osx,linux)
+PROTOC_ARCH := $(if $(filter arm64 aarch64,$(shell uname -m)),aarch_64,x86_64)
+
+.PHONY: proto-tools
+proto-tools:
+	@mkdir -p $(TOOLS_DIR)/bin
+	@test "$$($(PROTOC) --version 2>/dev/null)" = "libprotoc 3.$(PROTOC_VERSION)" || { \
+		echo "installing protoc $(PROTOC_VERSION)"; \
+		curl -fsSL -o $(TOOLS_DIR)/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v$(PROTOC_VERSION)/protoc-$(PROTOC_VERSION)-$(PROTOC_OS)-$(PROTOC_ARCH).zip && \
+		unzip -o -q $(TOOLS_DIR)/protoc.zip -d $(TOOLS_DIR) 'bin/protoc' 'include/*' && rm $(TOOLS_DIR)/protoc.zip; }
+	@GOBIN=$(TOOLS_DIR)/bin $(GO) install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
+	@GOBIN=$(TOOLS_DIR)/bin $(GO) install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GO_GRPC_VERSION)
+
 .PHONY: proto
-proto:
-	$(PROTOC) -I proto \
+proto: proto-tools
+	PATH="$(TOOLS_DIR)/bin:$$PATH" $(PROTOC) -I proto \
 		--go_out=. --go_opt=module=github/nallanos/fire2 \
 		--go-grpc_out=. --go-grpc_opt=module=github/nallanos/fire2 \
 		proto/worker/v1/worker.proto \
@@ -43,7 +64,8 @@ ansible-install:
 ansible-build:
 	@mkdir -p dist
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o dist/worker ./cmd/worker
-	@echo "built: dist/worker"
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o dist/fire2-shim ./cmd/fire2-shim
+	@echo "built: dist/worker dist/fire2-shim"
 
 .PHONY: ansible-deploy
 ansible-deploy:

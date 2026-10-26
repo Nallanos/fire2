@@ -3,7 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/riverqueue/river"
@@ -37,7 +37,7 @@ func (w *ReapWorkersWorker) Work(ctx context.Context, job *river.Job[ReapWorkers
 		return fmt.Errorf("reap workers: %w", err)
 	}
 	if n > 0 {
-		log.Printf("reaper: marked %d stale worker(s) inactive", n)
+		slog.Warn("reaper: marked stale workers inactive", "count", n)
 	}
 	return nil
 }

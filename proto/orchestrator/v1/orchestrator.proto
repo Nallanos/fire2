@@ -9,6 +9,7 @@ import "google/protobuf/timestamp.proto";
 
 service OrchestratorService {
   rpc IngestSandboxEvent(SandboxEvent) returns (google.protobuf.Empty);
+  rpc RegisterWorker(WorkerHeartbeat) returns (WorkerRegistration);
   rpc ReportWorkerHeartbeat(WorkerHeartbeat) returns (google.protobuf.Empty);
 }
 
@@ -22,6 +23,38 @@ message WorkerHeartbeat {
   int32  mem_budget = 7;
   int32  cpu_usage  = 8;
   int32  mem_usage  = 9;
+  int64  fencing_token = 10;
+  // inventory_complete distinguishes an empty inventory (the worker hosts no
+  // sandbox) from an absent one (the worker did not report any). The
+  // orchestrator only reconciles sandboxes when it is true.
+  bool   inventory_complete = 11;
+  reserved 12, 13;
+  reserved "sandbox_ids";
+  // sandboxes lists every sandbox the worker currently tracks with its last
+  // known state, read from the sandbox manager's snapshot (no probe of the
+  // VMs on the heartbeat path).
+  repeated SandboxInventoryEntry sandboxes = 14;
+}
+
+// SandboxState is the closed vocabulary a worker reports for a sandbox. It is
+// the worker's view of the VM, not firecracker-go-sdk's InstanceInfo.State.
+enum SandboxState {
+  SANDBOX_STATE_UNSPECIFIED = 0;
+  // Tracked by the worker, VM not running yet (includes Firecracker's
+  // "Not started").
+  SANDBOX_STATE_STARTING = 1;
+  SANDBOX_STATE_RUNNING = 2;
+  SANDBOX_STATE_PAUSED = 3;
+  // The Firecracker process is alive but its API could not be queried.
+  SANDBOX_STATE_UNKNOWN = 4;
+  // The Firecracker process exited (Machine.Wait returned). The worker keeps
+  // the sandbox until the orchestrator asks it to remove it.
+  SANDBOX_STATE_DEAD = 5;
+}
+
+message SandboxInventoryEntry {
+  string sandbox_id = 1;
+  SandboxState state = 2;
 }
 
 message SandboxEvent {
@@ -30,8 +63,16 @@ message SandboxEvent {
   reserved 3, 6, 7, 8;
   reserved "container_id", "action", "actor_id", "attributes";
   string worker_id = 4;
-  // Instance state, matching firecracker-go-sdk's InstanceInfo.State
-  // ("Not started" | "Running" | "Paused").
-  string state = 5;
+  // 5 was the raw firecracker-go-sdk InstanceInfo.State string.
+  reserved 5;
   google.protobuf.Timestamp occurred_at = 9;
+  // fencing_token identifies the worker incarnation that emitted the event.
+  // Events from a superseded incarnation are rejected.
+  int64 fencing_token = 10;
+  // state is the sandbox's new state. Events are only sent on change.
+  SandboxState state = 11;
+}
+
+message WorkerRegistration {
+  int64 fencing_token = 1;
 }

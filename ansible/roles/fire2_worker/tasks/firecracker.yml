@@ -36,6 +36,8 @@
   ansible.builtin.file:
     path: "{{ firecracker_sandbox_dir }}"
     state: directory
-    owner: "{{ fire2_user }}"
-    group: "{{ fire2_group }}"
-    mode: "0755"
+    # Root only: it holds each VM's config (which disk Firecracker, as root,
+    # opens) and the shims' sockets and pidfiles.
+    owner: root
+    group: root
+    mode: "0700"

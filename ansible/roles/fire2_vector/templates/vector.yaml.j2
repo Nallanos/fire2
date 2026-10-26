@@ -1,0 +1,85 @@
+# Managed by Ansible (fire2_vector role).
+# Ships fire2 logs to VictoriaLogs ({{ victorialogs_addr }}).
+data_dir: {{ vector_data_dir }}
+
+sources:
+  # The Go binaries log JSON lines to stderr, which systemd puts in the
+  # journal. include_units also matches systemd's own messages about those
+  # units (start, stop, crash, start-limit-hit).
+  journald:
+    type: journald
+    include_units:
+{% for unit in vector_journald_units %}
+      - {{ unit }}
+{% endfor %}
+{% if vector_sandbox_dir | length > 0 %}
+
+  # Each shim's own log (O_APPEND, JSON lines like the other binaries, plus
+  # any raw panic output). firecracker.log is the guest serial console and is
+  # deliberately not matched.
+  shim_file:
+    type: file
+    include:
+      - {{ vector_sandbox_dir }}/*/shim.log
+{% endif %}
+
+transforms:
+  normalize:
+    type: remap
+    inputs:
+      - journald
+{% if vector_sandbox_dir | length > 0 %}
+      - shim_file
+{% endif %}
+    source: |
+      raw = string(.message) ?? ""
+
+      # JSON object line (slog): its fields become the event's fields.
+      # Anything else (panic traces, systemd messages): plain text as msg.
+      parsed = parse_json(raw) ?? null
+      fields = if is_object(parsed) { object!(parsed) } else { { "msg": raw } }
+      if !exists(fields.msg) { fields.msg = raw }
+      fields.msg = to_string(fields.msg) ?? raw
+
+      # slog's "time" is the event time; fall back to Vector's read time.
+      ts = parse_timestamp(string(fields.time) ?? "", "%+") ?? .timestamp
+      del(fields.time)
+
+      if .source_type == "file" {
+        # <sandbox base dir>/<sandbox id>/shim.log
+        fields.sandbox_id = parse_regex(.file, r'/(?P<id>[^/]+)/shim\.log$').id ?? null
+        if !exists(fields.service) { fields.service = "fire2-shim" }
+      } else {
+        # UNIT is set on systemd's own messages about a unit (their
+        # _SYSTEMD_UNIT is init.scope).
+        unit = string(.UNIT) ?? string(._SYSTEMD_UNIT) ?? "unknown"
+        if !exists(fields.service) { fields.service = replace(unit, ".service", "") }
+      }
+
+      # Drop journald's many extra fields: keep only the normalized event.
+      . = merge({ "timestamp": ts, "host": "{{ inventory_hostname }}" }, fields)
+
+sinks:
+  victorialogs:
+    type: http
+    inputs:
+      - normalize
+    # VictoriaLogs JSON stream API. _stream_fields are the low-cardinality
+    # fields that define a stream; sandbox_id is deliberately a regular field.
+    uri: http://{{ victorialogs_addr }}/insert/jsonline?_msg_field=msg&_time_field=timestamp&_stream_fields=host,service
+    compression: gzip
+    encoding:
+      codec: json
+    framing:
+      method: newline_delimited
+    # The URI has no health endpoint to probe; failed requests are retried.
+    healthcheck:
+      enabled: false
+    buffer:
+      type: {{ vector_buffer_type }}
+{% if vector_buffer_type == 'disk' %}
+      max_size: {{ vector_buffer_max_bytes }}
+{% else %}
+      max_events: {{ vector_buffer_max_events }}
+{% endif %}
+      when_full: block

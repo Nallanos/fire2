@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -9,50 +10,118 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/google/uuid"
+
+	"github/nallanos/fire2/internal/packages/shim"
 )
 
-// ReapOrphans scans baseDir for leftover per-sandbox directories from a
-// previous worker process (crash or restart) and removes them, killing any
-// Firecracker process still holding the directory's socket first.
-//
-// The worker keeps no persisted state of its own — sandboxes.go's
-// runningSandboxes map is wiped on restart by design. Re-creating a sandbox
-// is the orchestrator's job (its existing retry policy re-drives
-// stepStartContainer when the worker-side call fails); this function's only
-// responsibility is guaranteeing a clean slate for that retry to land on,
-// not resuming management of a VM this process didn't start.
-//
-// Call this once at worker startup, before serving gRPC — otherwise an
-// incoming CreateSandbox could race a still-in-progress reap of the same
-// directory.
-func ReapOrphans(baseDir string) error {
+// IsSandboxID reports whether name is shaped like a sandbox ID (the
+// orchestrator mints UUIDs). Everything that lists sandboxes on disk filters
+// with it: the base dir defaults to /tmp, and a reaper must never touch a
+// directory it did not create.
+func IsSandboxID(name string) bool {
+	_, err := uuid.Parse(name)
+	return err == nil && len(name) == 36
+}
+
+// ErrInvalidSandboxID is returned for an ID that is not a sandbox ID (a UUID).
+// A sandbox ID becomes a path under the base dir, which the worker, running as
+// root, creates and later removes recursively: an ID such as "../../etc" must
+// never get that far.
+var ErrInvalidSandboxID = errors.New("invalid sandbox id")
+
+// CheckSandboxID returns nil if id is shaped like a sandbox ID (see
+// IsSandboxID), and an error wrapping ErrInvalidSandboxID otherwise.
+func CheckSandboxID(id string) error {
+	if !IsSandboxID(id) {
+		return fmt.Errorf("%w: %q", ErrInvalidSandboxID, id)
+	}
+	return nil
+}
+
+// ListSandboxDirs returns the sandbox IDs that have a directory under baseDir.
+func ListSandboxDirs(baseDir string) ([]string, error) {
 	entries, err := os.ReadDir(baseDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return nil, nil
 		}
-		return fmt.Errorf("read sandbox base dir: %w", err)
+		return nil, fmt.Errorf("read sandbox base dir: %w", err)
+	}
+	var ids []string
+	for _, entry := range entries {
+		if entry.IsDir() && IsSandboxID(entry.Name()) {
+			ids = append(ids, entry.Name())
+		}
+	}
+	return ids, nil
+}
+
+// ReapSandbox tears down whatever a sandbox left on this host: it kills the
+// sandbox's shim and the Firecracker process still holding its socket,
+// removes its thin volume, then its directory. Every step tolerates the resource being already
+// gone, so it is safe on a partially created or partially removed sandbox.
+//
+// The directory is the ownership marker: it is created before the volume and
+// removed after it, so a volume only exists while its directory does. If the
+// volume cannot be removed, the directory is kept for the next attempt to
+// find. Nothing reaps a volume by listing the host-wide device-mapper
+// namespace: the directory alone says which sandboxes exist.
+//
+// removeVolume removes the sandbox's thin volume (thin.Pool.RemoveVolume) and
+// must tolerate it being already gone.
+//
+// The caller must own the ID (see sandboxmgr's ownership rule): reaping a
+// sandbox that is being created destroys it.
+func ReapSandbox(baseDir, sandboxID string, removeVolume func(sandboxID string) error) error {
+	if !IsSandboxID(sandboxID) {
+		return fmt.Errorf("refusing to reap %q: not a sandbox id", sandboxID)
+	}
+	dir := filepath.Join(baseDir, sandboxID)
+	socketPath := shim.Path(dir, shim.APISocket)
+
+	// A shim nobody can attach to: killing it kills its VM (Pdeathsig).
+	if err := shim.KillStale(dir); err != nil {
+		return err
+	}
+	// A Firecracker still holding the socket: its shim just died and the
+	// kernel has not delivered Pdeathsig yet, or it predates shims.
+	if pid, found := findProcessHoldingSocket(socketPath); found {
+		if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
+			return fmt.Errorf("kill orphaned firecracker pid=%d for %s: %w", pid, sandboxID, err)
+		}
+		waitForSocketGone(socketPath, 2*time.Second)
 	}
 
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		dir := filepath.Join(baseDir, entry.Name())
-		socketPath := filepath.Join(dir, "firecracker.sock")
-
-		if pid, found := findProcessHoldingSocket(socketPath); found {
-			if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
-				return fmt.Errorf("kill orphaned firecracker pid=%d for %s: %w", pid, entry.Name(), err)
-			}
-			waitForSocketGone(socketPath, 2*time.Second)
-		}
-
-		if err := os.RemoveAll(dir); err != nil {
-			return fmt.Errorf("remove orphaned sandbox dir %s: %w", dir, err)
-		}
+	if err := removeVolume(sandboxID); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("remove orphaned sandbox dir %s: %w", dir, err)
 	}
 	return nil
+}
+
+// ReapOrphans reaps every sandbox in baseDir, live shims and VMs included. It
+// backs `worker -reap-all`: stop everything for maintenance. A worker starting
+// up does not call it: it re-attaches to live shims instead (see
+// sandboxmgr.Manager.Recover) and reaps only what it cannot attach to.
+//
+// The caller must hold the base dir lock (sandboxmgr.LockBaseDir), so no
+// worker owns any of it.
+func ReapOrphans(baseDir string, removeVolume func(sandboxID string) error) error {
+	ids, err := ListSandboxDirs(baseDir)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, id := range ids {
+		if err := ReapSandbox(baseDir, id, removeVolume); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // findProcessHoldingSocket scans /proc for a firecracker process whose

@@ -6,6 +6,7 @@
     fail_msg: "orchestrator_database_url is not set — export PROD_DATABASE_URL in .env (see group_vars/orchestrator.yml)"
 
 - ansible.builtin.import_tasks: tailscale.yml
+- ansible.builtin.import_tasks: journald.yml
 - ansible.builtin.import_tasks: user.yml
 - ansible.builtin.import_tasks: migrate.yml
   tags: [migrate]

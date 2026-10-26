@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -68,10 +68,12 @@ type createSandboxRequest struct {
 // Defaults match the Firecracker config validated manually during
 // development. Applied whenever the caller doesn't specify a value, so
 // requests from clients unaware of these fields still get a Firecracker-valid
-// machine-config instead of a rejected vcpu_count of 0.
+// machine-config instead of a rejected vcpu_count of 0. They are the size of
+// one worker slot, which is also the most a sandbox may ask for
+// (workerpkg.CheckSandboxSize): the worker sizes its capacity in these slots.
 const (
-	defaultVcpuCount  int32 = 1
-	defaultMemSizeMib int32 = 256
+	defaultVcpuCount  int32 = workerpkg.SandboxVcpu
+	defaultMemSizeMib int32 = workerpkg.SandboxMemMiB
 )
 
 func (h *HTTPHandlers) createSandbox(w http.ResponseWriter, r *http.Request) {
@@ -90,11 +92,15 @@ func (h *HTTPHandlers) createSandbox(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, sandboxpkg.ErrMsgRuntimeRequired, http.StatusBadRequest)
 		return
 	}
+	if err := workerpkg.CheckSandboxSize(body.VcpuCount, body.MemSizeMib); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if body.TTL <= 0 {
 		body.TTL = 3600
 	}
 	if h.riverClient == nil {
-		log.Printf("river client is not configured")
+		slog.Error("river client is not configured")
 		http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusInternalServerError)
 		return
 	}
@@ -102,12 +108,12 @@ func (h *HTTPHandlers) createSandbox(w http.ResponseWriter, r *http.Request) {
 	// Fast-path: refuse early if no workers are registered.
 	workers, err := h.workerRepo.List(r.Context())
 	if err != nil {
-		log.Printf("list workers failed: %v", err)
+		slog.Error("list workers failed", "err", err)
 		http.Error(w, "failed to list workers", http.StatusInternalServerError)
 		return
 	}
 	if len(workers) == 0 {
-		log.Printf("no workers available for sandbox creation")
+		slog.Warn("no workers available for sandbox creation")
 		http.Error(w, "no workers available", http.StatusServiceUnavailable)
 		return
 	}
@@ -141,7 +147,7 @@ func (h *HTTPHandlers) createSandbox(w http.ResponseWriter, r *http.Request) {
 	sandboxID := uuid.NewString()
 	tx, err := h.pool.Begin(r.Context())
 	if err != nil {
-		log.Printf("begin tx failed: %v", err)
+		slog.Error("begin tx failed", "err", err)
 		http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusInternalServerError)
 		return
 	}
@@ -161,20 +167,20 @@ func (h *HTTPHandlers) createSandbox(w http.ResponseWriter, r *http.Request) {
 		UserID:     &user.ID,
 	})
 	if err != nil {
-		log.Printf("create sandbox record failed: id=%s err=%v", sandboxID, err)
+		slog.Error("create sandbox record failed", "sandbox_id", sandboxID, "err", err)
 		http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusInternalServerError)
 		return
 	}
 
 	insertRes, err := h.riverClient.InsertTx(r.Context(), tx, CreateSandboxArgs{SandboxID: sandboxID}, nil)
 	if err != nil {
-		log.Printf("insert river job failed: id=%s err=%v", sandboxID, err)
+		slog.Error("insert river job failed", "sandbox_id", sandboxID, "err", err)
 		http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusInternalServerError)
 		return
 	}
 
 	if err := tx.Commit(r.Context()); err != nil {
-		log.Printf("commit tx failed: id=%s err=%v", sandboxID, err)
+		slog.Error("commit tx failed", "sandbox_id", sandboxID, "err", err)
 		http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusInternalServerError)
 		return
 	}
@@ -184,11 +190,11 @@ func (h *HTTPHandlers) createSandbox(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-r.Context().Done():
-			log.Printf("create sandbox request canceled: id=%s err=%v", sandboxID, r.Context().Err())
+			slog.Warn("create sandbox request canceled", "sandbox_id", sandboxID, "err", r.Context().Err())
 			return
 		case event, ok := <-eventCh:
 			if !ok {
-				log.Printf("river subscription closed before job completion: id=%s job=%d", sandboxID, jobID)
+				slog.Error("river subscription closed before job completion", "sandbox_id", sandboxID, "job_id", jobID)
 				http.Error(w, sandboxpkg.ErrMsgCreateSandboxFailed, http.StatusBadGateway)
 				return
 			}
@@ -280,7 +286,7 @@ func (h *HTTPHandlers) listSandboxes(w http.ResponseWriter, r *http.Request) {
 	// List all active workers in the database
 	workers, err := h.workerRepo.ListActive(r.Context())
 	if err != nil {
-		log.Printf("list workers failed: %v", err)
+		slog.Error("list workers failed", "err", err)
 		http.Error(w, "failed to list workers", http.StatusInternalServerError)
 		return
 	}
@@ -302,21 +308,21 @@ func (h *HTTPHandlers) listSandboxes(w http.ResponseWriter, r *http.Request) {
 
 			client, err := NewClient(ctx, normalizeWorkerAddress(worker.Address, int32(worker.Port)))
 			if err != nil {
-				log.Printf("failed to create gRPC client for worker %s: %v", worker.ID, err)
+				slog.Error("create worker gRPC client failed", "worker_id", worker.ID, "err", err)
 				return
 			}
 			defer client.Close()
 
 			sbxResp, err := client.ListRunningSandboxes(ctx, &workerv1.ListRunningSandboxesRequest{})
 			if err != nil {
-				log.Printf("failed to list running sandboxes for worker %s: %v", worker.ID, err)
+				slog.Error("list running sandboxes failed", "worker_id", worker.ID, "err", err)
 				return
 			}
 
 			for _, sbx := range sbxResp.ContainerIds {
 				sandbox, err := h.sandboxRepo.GetByID(ctx, sbx)
 				if err != nil {
-					log.Printf("failed to fetch sandbox details for ID %s: %v", sbx, err)
+					slog.Error("fetch sandbox details failed", "sandbox_id", sbx, "err", err)
 					continue
 				}
 				if sandbox.UserID == nil || *sandbox.UserID != user.ID {
@@ -377,14 +383,14 @@ func (h *HTTPHandlers) deleteSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.riverClient == nil {
-		log.Printf("river client is not configured")
+		slog.Error("river client is not configured")
 		http.Error(w, "delete sandbox failed", http.StatusInternalServerError)
 		return
 	}
 
 	tx, err := h.pool.Begin(r.Context())
 	if err != nil {
-		log.Printf("delete sandbox: begin tx failed: id=%s err=%v", id, err)
+		slog.Error("delete sandbox: begin tx failed", "sandbox_id", id, "err", err)
 		http.Error(w, "delete sandbox failed", http.StatusInternalServerError)
 		return
 	}
@@ -394,7 +400,7 @@ func (h *HTTPHandlers) deleteSandbox(w http.ResponseWriter, r *http.Request) {
 		sandboxpkg.StatusPending, sandboxpkg.StatusScheduling, sandboxpkg.StatusAssigned,
 		sandboxpkg.StatusStarting, sandboxpkg.StatusRunning)
 	if err != nil {
-		log.Printf("delete sandbox: set cleanup_pending failed: id=%s err=%v", id, err)
+		slog.Error("delete sandbox: set cleanup_pending failed", "sandbox_id", id, "err", err)
 		http.Error(w, "delete sandbox failed", http.StatusInternalServerError)
 		return
 	}
@@ -409,13 +415,13 @@ func (h *HTTPHandlers) deleteSandbox(w http.ResponseWriter, r *http.Request) {
 		SandboxID:    id,
 		TargetStatus: string(sandboxpkg.StatusStopped),
 	}, &river.InsertOpts{Queue: "cleanup"}); err != nil {
-		log.Printf("delete sandbox: insert cleanup job failed: id=%s err=%v", id, err)
+		slog.Error("delete sandbox: insert cleanup job failed", "sandbox_id", id, "err", err)
 		http.Error(w, "delete sandbox failed", http.StatusInternalServerError)
 		return
 	}
 
 	if err := tx.Commit(r.Context()); err != nil {
-		log.Printf("delete sandbox: commit tx failed: id=%s err=%v", id, err)
+		slog.Error("delete sandbox: commit tx failed", "sandbox_id", id, "err", err)
 		http.Error(w, "delete sandbox failed", http.StatusInternalServerError)
 		return
 	}

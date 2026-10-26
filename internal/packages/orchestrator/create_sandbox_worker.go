@@ -4,7 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -24,6 +25,34 @@ type CreateSandboxArgs struct {
 }
 
 func (CreateSandboxArgs) Kind() string { return "create_sandbox" }
+
+// Bounds on the orchestrator's calls to a worker. A worker the network drops
+// packets to (not one that refuses the connection) would otherwise hold the job
+// until River's own timeout, and keep a HTTP caller waiting.
+const (
+	// candidatesTimeout bounds all the GetWorkerInfo calls of one scheduling
+	// step (buildCandidates).
+	candidatesTimeout = 5 * time.Second
+	// defaultCreateSandboxCallTimeout bounds one CreateSandbox call. The worker
+	// bounds the boot to 30s itself (sandboxmgr bootTimeout), then answers.
+	defaultCreateSandboxCallTimeout = 45 * time.Second
+	// defaultRemoveSandboxCallTimeout bounds one removal, from the database
+	// read of the worker to the worker's answer. Removing includes stopping the
+	// VM (3s of grace, then a kill) and the device-mapper EBUSY retries, up to 5s.
+	defaultRemoveSandboxCallTimeout = 15 * time.Second
+
+	// JobTimeout is what a River job gets (river.Config.JobTimeout): the slowest
+	// attempt of the create job, a scheduling step then a CreateSandbox call,
+	// plus room for its database round trips. Left to River's default (1m) the
+	// room would be 10s, one slow query from a job cancelled mid-call.
+	JobTimeout = candidatesTimeout + defaultCreateSandboxCallTimeout + 30*time.Second
+)
+
+// Variables so a test does not wait the real delays.
+var (
+	createSandboxCallTimeout = defaultCreateSandboxCallTimeout
+	removeSandboxCallTimeout = defaultRemoveSandboxCallTimeout
+)
 
 // CleanupSandboxArgs are the arguments for the cleanup river job.
 type CleanupSandboxArgs struct {
@@ -85,10 +114,45 @@ func (w *CreateSandboxWorker) Work(ctx context.Context, job *river.Job[CreateSan
 		sandboxpkg.StatusFailed,
 		sandboxpkg.StatusCleanupPending,
 		sandboxpkg.StatusCleanedUp:
-		return nil // already terminal or running — idempotent no-op
+		_, err := settled(sbx)
+		return err
 	default:
 		return fmt.Errorf("unexpected sandbox status %q for sandbox %s", sbx.Status, sandboxID)
 	}
+}
+
+// settled reports whether the create job has nothing left to do for sbx: it
+// is running (nil), or it ended without coming up (a cancellation).
+//
+// A sandbox can end under its job: liveness, the TTL, a delete, a dead VM.
+// Such a job must be cancelled, not completed. A completed job tells the HTTP
+// handler the sandbox was created, and it answers 201 for a sandbox that is
+// gone. Cancelling also stops River from retrying a job that cannot succeed.
+func settled(sbx sandboxpkg.Sandbox) (bool, error) {
+	switch sbx.Status {
+	case sandboxpkg.StatusRunning:
+		return true, nil
+	case sandboxpkg.StatusStopped, sandboxpkg.StatusFailed, sandboxpkg.StatusCleanupPending, sandboxpkg.StatusCleanedUp:
+		return true, river.JobCancel(fmt.Errorf("sandbox %s ended as %s before it came up", sbx.ID, sbx.Status))
+	}
+	return false, nil
+}
+
+// movedUnder is what a step does when its guarded update changed nothing: the
+// sandbox moved since the job read it (a delete, the TTL, the creation timeout,
+// the event handler). It reads the sandbox again and reports what it became:
+// nil if it is running, a cancellation if it ended, and otherwise an error so
+// River retries the job from the sandbox's real status. Returning nil here
+// would complete the job for a sandbox that did not come up.
+func (w *CreateSandboxWorker) movedUnder(ctx context.Context, sandboxID, step string, isFinal bool, job *river.Job[CreateSandboxArgs]) error {
+	sbx, err := w.sandboxRepo.GetByID(ctx, sandboxID)
+	if err != nil {
+		return w.maybeCleanup(ctx, sandboxID, isFinal, job, err)
+	}
+	if done, err := settled(sbx); done {
+		return err
+	}
+	return w.maybeCleanup(ctx, sandboxID, isFinal, job, fmt.Errorf("sandbox %s moved to %s during %s", sandboxID, sbx.Status, step))
 }
 
 // stepScheduling transitions pending → scheduling.
@@ -98,8 +162,7 @@ func (w *CreateSandboxWorker) stepScheduling(ctx context.Context, sandboxID stri
 		return w.maybeCleanup(ctx, sandboxID, isFinal, job, fmt.Errorf("set scheduling: %w", err))
 	}
 	if n == 0 {
-		// Race: status was already advanced by a concurrent attempt — re-read and continue.
-		return nil
+		return w.movedUnder(ctx, sandboxID, "scheduling", isFinal, job)
 	}
 	// Re-enter to run the scheduling step in the same Work() call.
 	sbx, err := w.sandboxRepo.GetByID(ctx, sandboxID)
@@ -121,24 +184,43 @@ func (w *CreateSandboxWorker) stepAssign(ctx context.Context, sbx sandboxpkg.San
 		return w.maybeCleanup(ctx, sbx.ID, isFinal, job, fmt.Errorf("list workers: %w", err))
 	}
 
+	// The load info behind candidates is a snapshot, so the chosen worker may
+	// have filled up since. AssignWorker is the authoritative check: when it
+	// reports the worker full, drop it and choose again among the others.
 	candidates := buildCandidates(ctx, workers)
-	chosen, err := w.scheduler.ChooseLeastUsedWorker(candidates)
-	if errors.Is(err, ErrClusterFull) {
-		// Retrying with backoff won't free capacity fast enough to be useful
-		// and the HTTP caller is waiting: fail fast, treat as final.
-		return w.maybeCleanup(ctx, sbx.ID, true, job, fmt.Errorf("choose worker: %w", err))
-	}
-	if err != nil {
-		return w.maybeCleanup(ctx, sbx.ID, isFinal, job, fmt.Errorf("choose worker: %w", err))
-	}
+	var assigned sandboxpkg.Sandbox
+	droppedFull := false
+	for {
+		chosen, err := w.scheduler.ChooseLeastUsedWorker(candidates)
+		if errors.Is(err, ErrClusterFull) {
+			// Retrying with backoff won't free capacity fast enough to be useful
+			// and the HTTP caller is waiting: fail fast, treat as final.
+			return w.maybeCleanup(ctx, sbx.ID, true, job, fmt.Errorf("choose worker: %w", err))
+		}
+		if err != nil {
+			if droppedFull && errors.Is(err, ErrNoWorkerCandidates) {
+				// Every candidate was dropped for being full.
+				return w.maybeCleanup(ctx, sbx.ID, true, job, fmt.Errorf("choose worker: %w", ErrClusterFull))
+			}
+			return w.maybeCleanup(ctx, sbx.ID, isFinal, job, fmt.Errorf("choose worker: %w", err))
+		}
 
-	assigned, err := w.sandboxRepo.AssignWorker(ctx, sbx.ID, chosen.Worker.ID)
-	if err != nil {
-		return w.maybeCleanup(ctx, sbx.ID, isFinal, job, fmt.Errorf("assign worker: %w", err))
+		assigned, err = w.sandboxRepo.AssignWorker(ctx, sbx.ID, chosen.Worker.ID)
+		if errors.Is(err, sandboxpkg.ErrWorkerFull) {
+			droppedFull = true
+			candidates = slices.DeleteFunc(candidates, func(c WorkerCandidate) bool {
+				return c.Worker.ID == chosen.Worker.ID
+			})
+			continue
+		}
+		if err != nil {
+			return w.maybeCleanup(ctx, sbx.ID, isFinal, job, fmt.Errorf("assign worker: %w", err))
+		}
+		break
 	}
 	if assigned.WorkerID == nil {
-		// Guard rejected the update — status advanced concurrently, re-read.
-		return nil
+		// Guard rejected the update: the status moved since the job read it.
+		return w.movedUnder(ctx, sbx.ID, "assignment", isFinal, job)
 	}
 
 	return w.stepStartSandbox(ctx, assigned, isFinal, job)
@@ -166,7 +248,9 @@ func (w *CreateSandboxWorker) stepStartSandbox(ctx context.Context, sbx sandboxp
 	}
 	defer client.Close()
 
-	_, grpcErr := client.CreateSandbox(ctx, &workerv1.CreateSandboxRequest{
+	callCtx, cancel := context.WithTimeout(ctx, createSandboxCallTimeout)
+	defer cancel()
+	_, grpcErr := client.CreateSandbox(callCtx, &workerv1.CreateSandboxRequest{
 		Id:         sbx.ID,
 		Runtime:    sbx.Runtime,
 		Image:      sbx.Image,
@@ -181,14 +265,14 @@ func (w *CreateSandboxWorker) stepStartSandbox(ctx context.Context, sbx sandboxp
 	}
 
 	// Measure the time it takes to start the sandbox.
-	log.Printf("create_sandbox: sandbox=%s started in %v", sbx.ID, time.Since(startTime))
+	slog.Info("create_sandbox: sandbox started", "sandbox_id", sbx.ID, "duration", time.Since(startTime).String())
 
 	_, n, err := w.sandboxRepo.UpdateStatus(ctx, sbx.ID, sandboxpkg.StatusStarting, sandboxpkg.StatusAssigned)
 	if err != nil {
 		return w.maybeCleanup(ctx, sbx.ID, isFinal, job, fmt.Errorf("set starting: %w", err))
 	}
 	if n == 0 {
-		log.Printf("create_sandbox: status guard rejected starting update for sandbox=%s; may have been advanced by event handler", sbx.ID)
+		slog.Info("create_sandbox: status guard rejected starting update, may have been advanced by event handler", "sandbox_id", sbx.ID)
 	}
 
 	return w.stepAcknowledge(ctx, sbx.ID, isFinal, job)
@@ -200,17 +284,18 @@ func (w *CreateSandboxWorker) stepAcknowledge(ctx context.Context, sandboxID str
 	if err != nil {
 		return w.maybeCleanup(ctx, sandboxID, isFinal, job, err)
 	}
-	if sbx.Status == sandboxpkg.StatusRunning {
-		return nil // event handler already flipped it
-	}
-	if sbx.Status == sandboxpkg.StatusFailed {
-		return nil // container died — event handler flipped it; cleanup will be scheduled elsewhere
+	// Running: the event handler already flipped it. Ended: it died under us.
+	if done, err := settled(sbx); done {
+		return err
 	}
 
-	_, _, err = w.sandboxRepo.UpdateStatus(ctx, sandboxID, sandboxpkg.StatusRunning,
+	_, n, err := w.sandboxRepo.UpdateStatus(ctx, sandboxID, sandboxpkg.StatusRunning,
 		sandboxpkg.StatusStarting)
 	if err != nil {
 		return w.maybeCleanup(ctx, sandboxID, isFinal, job, fmt.Errorf("set running: %w", err))
+	}
+	if n == 0 {
+		return w.movedUnder(ctx, sandboxID, "acknowledgement", isFinal, job)
 	}
 	return nil
 }
@@ -222,11 +307,11 @@ func (w *CreateSandboxWorker) maybeCleanup(ctx context.Context, sandboxID string
 		return origErr
 	}
 
-	log.Printf("create_sandbox: final attempt failed for sandbox=%s err=%v; enqueueing cleanup", sandboxID, origErr)
+	slog.Error("create_sandbox: final attempt failed, enqueueing cleanup", "sandbox_id", sandboxID, "err", origErr)
 
 	tx, txErr := w.pool.Begin(ctx)
 	if txErr != nil {
-		log.Printf("create_sandbox: could not begin cleanup tx for sandbox=%s: %v", sandboxID, txErr)
+		slog.Error("create_sandbox: could not begin cleanup tx", "sandbox_id", sandboxID, "err", txErr)
 		return origErr
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
@@ -234,19 +319,19 @@ func (w *CreateSandboxWorker) maybeCleanup(ctx context.Context, sandboxID string
 	_, _, updateErr := w.sandboxRepo.WithTx(tx).UpdateStatus(ctx, sandboxID, sandboxpkg.StatusCleanupPending,
 		sandboxpkg.StatusPending, sandboxpkg.StatusScheduling, sandboxpkg.StatusAssigned, sandboxpkg.StatusStarting, sandboxpkg.StatusRunning)
 	if updateErr != nil {
-		log.Printf("create_sandbox: could not set cleanup_pending for sandbox=%s: %v", sandboxID, updateErr)
+		slog.Error("create_sandbox: could not set cleanup_pending", "sandbox_id", sandboxID, "err", updateErr)
 		return origErr
 	}
 
 	riverClient := river.ClientFromContext[pgx.Tx](ctx)
 	_, insertErr := riverClient.InsertTx(ctx, tx, CleanupSandboxArgs{SandboxID: sandboxID}, &river.InsertOpts{Queue: "cleanup"})
 	if insertErr != nil {
-		log.Printf("create_sandbox: could not insert cleanup job for sandbox=%s: %v", sandboxID, insertErr)
+		slog.Error("create_sandbox: could not insert cleanup job", "sandbox_id", sandboxID, "err", insertErr)
 		return origErr
 	}
 
 	if commitErr := tx.Commit(ctx); commitErr != nil {
-		log.Printf("create_sandbox: cleanup tx commit failed for sandbox=%s: %v", sandboxID, commitErr)
+		slog.Error("create_sandbox: cleanup tx commit failed", "sandbox_id", sandboxID, "err", commitErr)
 		return origErr
 	}
 
@@ -255,7 +340,7 @@ func (w *CreateSandboxWorker) maybeCleanup(ctx context.Context, sandboxID string
 
 // buildCandidates contacts each worker via gRPC to fetch current load info.
 func buildCandidates(ctx context.Context, workers []workerpkg.Worker) []WorkerCandidate {
-	gctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	gctx, cancel := context.WithTimeout(ctx, candidatesTimeout)
 	defer cancel()
 
 	candidates := make([]WorkerCandidate, 0, len(workers))

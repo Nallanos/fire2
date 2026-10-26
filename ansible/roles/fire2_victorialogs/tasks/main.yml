@@ -1,0 +1,4 @@
+---
+- ansible.builtin.import_tasks: user.yml
+- ansible.builtin.import_tasks: binary.yml
+- ansible.builtin.import_tasks: systemd.yml

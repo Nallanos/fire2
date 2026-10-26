@@ -3,7 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"strconv"
 	"strings"
@@ -108,15 +108,15 @@ func CreateSandboxOnLeastUsedWorkerWithScheduler(ctx context.Context, scheduler 
 func DestroySandboxOnWorker(ctx context.Context, workerAddress, sandboxID string) {
 	client, err := NewClient(ctx, workerAddress)
 	if err != nil {
-		log.Printf("destroy sandbox: connect %q: %v", workerAddress, err)
+		slog.Error("destroy sandbox: connect failed", "address", workerAddress, "err", err)
 		return
 	}
 	defer client.Close()
 	if _, err := client.StopSandbox(ctx, &workerv1.StopSandboxRequest{ContainerId: sandboxID}); err != nil {
-		log.Printf("destroy sandbox: stop %s on %s: %v", sandboxID, workerAddress, err)
+		slog.Error("destroy sandbox: stop failed", "sandbox_id", sandboxID, "address", workerAddress, "err", err)
 	}
 	if _, err := client.RemoveSandbox(ctx, &workerv1.RemoveSandboxRequest{ContainerId: sandboxID}); err != nil {
-		log.Printf("destroy sandbox: remove %s on %s: %v", sandboxID, workerAddress, err)
+		slog.Error("destroy sandbox: remove failed", "sandbox_id", sandboxID, "address", workerAddress, "err", err)
 	}
 }
 

@@ -3,22 +3,23 @@ fire2_user: fire2
 fire2_group: fire2
 fire2_install_dir: /opt/fire2
 
-# How many worker processes to run on this VM.
-# Each instance gets its own systemd unit (fire2-worker@N) and env file
-# (worker-N.env) so they can all use port 0 (ephemeral) without colliding.
-worker_instances: 1
+# One worker process per host: it owns every sandbox on it (directory, thin
+# volume, Firecracker process) and reaps whatever it does not track. A second
+# process would reap the first one's sandboxes; the worker refuses to start
+# if another one holds the sandbox dir lock.
 
-# 0 = OS-assigned ephemeral port (self-reported via heartbeat). This lets many
-# workers share one VM without manual per-worker port assignment. Pin a value
+# 0 = OS-assigned ephemeral port (self-reported via heartbeat). Pin a value
 # only if you need a fixed port.
 worker_port: 0
 worker_heartbeat_interval: 5s
-worker_cpu_budget: 4
-worker_mem_budget: 3000
 
-# Stable identifier prefix passed as WORKER_ID. The instance number is
-# appended automatically (e.g. "myhost-1", "myhost-2") so each process
-# registers as a distinct worker row in the DB.
+# worker_cpu_budget / worker_mem_budget (MiB) are deliberately not set: the
+# worker is the only process on its host, so it sizes itself from the machine
+# (runtime.NumCPU and MemTotal), and its capacity is derived from them
+# (computeCapacity in internal/packages/worker). Set them per host in the
+# inventory only to hold part of a machine back.
+
+# Stable identifier passed as WORKER_ID: the worker row in the DB.
 worker_id: "{{ ansible_hostname }}"
 
 # Left empty by default: the worker binary auto-discovers its own Tailscale

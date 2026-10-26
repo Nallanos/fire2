@@ -3,13 +3,19 @@ package worker
 import (
 	"context"
 	"errors"
-	orchestratorv1 "github/nallanos/fire2/gen/orchestrator/v1"
+	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	orchestratorv1 "github/nallanos/fire2/gen/orchestrator/v1"
 )
 
 func detectWorkerAddress() (string, error) {
@@ -27,6 +33,64 @@ func detectWorkerAddress() (string, error) {
 		}
 	}
 	return "", errors.New("no suitable IP address found")
+}
+
+// Per-sandbox footprint used to size a worker. The guest matches the sandbox
+// defaults (migration 007: 1 vCPU / 256 MiB). A worker counts its capacity in
+// these slots, so a sandbox may not be larger than one (CheckSandboxSize): the
+// orchestrator takes its defaults and its limit from SandboxVcpu and
+// SandboxMemMiB, and there is no other source.
+const (
+	// SandboxVcpu is the vCPU count of one sandbox slot.
+	SandboxVcpu = 1
+	// SandboxMemMiB is the guest memory, in MiB, of one sandbox slot.
+	SandboxMemMiB = 256
+	// sandboxOverheadMiB is what each microVM costs on top of its guest
+	// memory: the Firecracker process, its KVM structures and devices. An idle
+	// 256 MiB guest was measured at 176 MiB resident, and grows to its full
+	// size plus this once the guest has touched all its memory.
+	sandboxOverheadMiB = 64
+	// memReserveMiB is held back from the memory budget for everything that is
+	// not a microVM: the OS, the worker, Vector, tailscaled. Measured at about
+	// 400 MiB on the 1 GiB workers, which have no swap: a budget that ignores
+	// it ends in the OOM killer.
+	memReserveMiB = 384
+)
+
+// ErrSandboxTooLarge is returned for a sandbox bigger than one slot.
+var ErrSandboxTooLarge = errors.New("sandbox is larger than a worker slot")
+
+// CheckSandboxSize refuses a vCPU count or a memory size above one slot
+// (SandboxVcpu, SandboxMemMiB). Capacity counts sandboxes, not resources: a
+// 4 GiB sandbox would count for one slot on a worker of 1 GiB without swap,
+// which is the OOM that computeCapacity sizes the fleet to avoid. Zero or
+// negative values mean "not set" and are the caller's defaults to apply, so
+// they pass. Lift this check together with the capacity model, not before.
+func CheckSandboxSize(vcpuCount, memSizeMiB int32) error {
+	if vcpuCount > SandboxVcpu {
+		return fmt.Errorf("%w: vcpu_count %d, at most %d", ErrSandboxTooLarge, vcpuCount, SandboxVcpu)
+	}
+	if memSizeMiB > SandboxMemMiB {
+		return fmt.Errorf("%w: mem_size_mib %d, at most %d", ErrSandboxTooLarge, memSizeMiB, SandboxMemMiB)
+	}
+	return nil
+}
+
+// computeCapacity returns how many sandboxes a worker can host: the scarcer of
+// CPU and memory decides. WORKER_MAX_SANDBOXES, when set to a positive value,
+// overrides the computation but never exceeds what the budgets allow.
+func computeCapacity(cpuBudget, memBudgetMiB int) int {
+	byCPU := cpuBudget / SandboxVcpu
+	byMem := (memBudgetMiB - memReserveMiB) / (SandboxMemMiB + sandboxOverheadMiB)
+	capacity := min(byCPU, byMem)
+	if capacity < 0 {
+		capacity = 0
+	}
+
+	if v, err := strconv.Atoi(os.Getenv("WORKER_MAX_SANDBOXES")); err == nil && v > 0 {
+		return min(v, capacity)
+	}
+	return capacity
 }
 
 func readMemBudgetMB() int {
@@ -115,6 +179,9 @@ func (w *WorkerService) GetWorkerInfo(ctx context.Context) (Worker, error) {
 
 // UpdateWorker updates the worker's status, resource usage, and heartbeat timestamp in the database.
 func (w *WorkerService) UpdateWorker(ctx context.Context) (string, error) {
+	w.heartbeatMu.Lock()
+	defer w.heartbeatMu.Unlock()
+
 	cpuUsage := readCPUUsagePercent()
 	memUsage := readMemUsageMB()
 	address, err := detectWorkerAddress()
@@ -142,26 +209,57 @@ func (w *WorkerService) UpdateWorker(ctx context.Context) (string, error) {
 	if w.worker.Address == "" {
 		w.worker.Address = address
 	}
-	w.worker.Capacity = w.worker.Budget.Cpu_budget
+	w.worker.Capacity = computeCapacity(w.worker.Budget.Cpu_budget, w.worker.Budget.Mem_budget)
 	w.worker.cpu_usage = cpuUsage
 	w.worker.mem_usage = memUsage
 	w.worker.Status = WorkerStatusActive
 	w.worker.Last_heartbeat = time.Now().UTC()
 	snap := w.worker
 	w.mu.Unlock()
+	w.sandboxes.SetCapacity(snap.Capacity)
 
-	_, err = w.orchestratorClient.ReportWorkerHeartbeat(ctx, &orchestratorv1.WorkerHeartbeat{
-		WorkerId:  snap.ID,
-		Status:    string(snap.Status),
-		Address:   snap.Address,
-		Port:      int32(snap.Port),
-		Capacity:  int32(snap.Capacity),
-		CpuBudget: int32(snap.Budget.Cpu_budget),
-		MemBudget: int32(snap.Budget.Mem_budget),
-		CpuUsage:  int32(snap.cpu_usage),
-		MemUsage:  int32(snap.mem_usage),
-	})
+	heartbeat := &orchestratorv1.WorkerHeartbeat{
+		WorkerId:     snap.ID,
+		Status:       string(snap.Status),
+		Address:      snap.Address,
+		Port:         int32(snap.Port),
+		Capacity:     int32(snap.Capacity),
+		CpuBudget:    int32(snap.Budget.Cpu_budget),
+		MemBudget:    int32(snap.Budget.Mem_budget),
+		CpuUsage:     int32(snap.cpu_usage),
+		MemUsage:     int32(snap.mem_usage),
+		FencingToken: snap.FencingToken,
+	}
+	if w.needsRegister {
+		// The heartbeat still carries the token this process held, if any: the
+		// orchestrator hands out one above it.
+		registration, err := w.orchestratorClient.RegisterWorker(ctx, heartbeat)
+		if err != nil {
+			return "", err
+		}
+		if registration == nil || registration.GetFencingToken() <= 0 {
+			return "", fmt.Errorf("register worker %s: invalid fencing token", snap.ID)
+		}
+		heartbeat.FencingToken = registration.GetFencingToken()
+		w.mu.Lock()
+		w.worker.FencingToken = heartbeat.FencingToken
+		w.mu.Unlock()
+		w.needsRegister = false
+	}
+
+	heartbeat.Sandboxes = w.sandboxes.Snapshot()
+	heartbeat.InventoryComplete = true
+
+	_, err = w.orchestratorClient.ReportWorkerHeartbeat(ctx, heartbeat)
 	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			// The orchestrator's database does not know this worker or its token
+			// (row deleted, restored from an older backup): this process is
+			// not an old one, so register again at the next heartbeat. An old
+			// process is refused with FailedPrecondition, which is final.
+			slog.Warn("orchestrator does not know this worker, registering again", "worker_id", snap.ID, "fencing_token", heartbeat.FencingToken)
+			w.needsRegister = true
+		}
 		return "", err
 	}
 

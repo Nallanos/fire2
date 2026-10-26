@@ -2,15 +2,20 @@ package worker
 
 import (
 	"context"
-	"log"
+	"errors"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
 	"time"
 
 	workerv1 "github/nallanos/fire2/gen/worker/v1"
+	runtimeClient "github/nallanos/fire2/internal/packages/runtime"
+	"github/nallanos/fire2/internal/packages/sandboxmgr"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -25,8 +30,25 @@ func NewWorkerGRPCServer(service *WorkerService) *WorkerGRPCServer {
 	return &WorkerGRPCServer{service: service}
 }
 
+// checkSandboxID refuses an ID that is not a sandbox ID (a UUID). The worker
+// runs as root and its gRPC API is not authenticated (only bound to a private
+// address): the ID becomes a path it creates and removes recursively, so
+// "../../etc" must be turned away at the door.
+func checkSandboxID(id string) error {
+	if err := runtimeClient.CheckSandboxID(id); err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+	return nil
+}
+
 // Implement gRPC server methods
 func (s *WorkerGRPCServer) CreateSandbox(ctx context.Context, req *workerv1.CreateSandboxRequest) (*workerv1.CreateSandboxResponse, error) {
+	if err := checkSandboxID(req.GetId()); err != nil {
+		return nil, err
+	}
+	if err := CheckSandboxSize(req.GetVcpuCount(), req.GetMemSizeMib()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 	if err := s.service.CreateSandbox(ctx, CreateSandboxInput{
 		ID:         req.GetId(),
 		Runtime:    req.GetRuntime(),
@@ -37,26 +59,49 @@ func (s *WorkerGRPCServer) CreateSandbox(ctx context.Context, req *workerv1.Crea
 		VcpuCount:  req.GetVcpuCount(),
 		MemSizeMib: req.GetMemSizeMib(),
 	}); err != nil {
-		return nil, err
+		return nil, sandboxError(err)
 	}
 
 	return &workerv1.CreateSandboxResponse{}, nil
 }
 
 func (s *WorkerGRPCServer) StopSandbox(ctx context.Context, req *workerv1.StopSandboxRequest) (*workerv1.StopSandboxResponse, error) {
-	if err := s.service.StopSandbox(req.GetContainerId()); err != nil {
+	if err := checkSandboxID(req.GetContainerId()); err != nil {
 		return nil, err
+	}
+	if err := s.service.StopSandbox(req.GetContainerId()); err != nil {
+		return nil, sandboxError(err)
 	}
 
 	return &workerv1.StopSandboxResponse{}, nil
 }
 
 func (s *WorkerGRPCServer) RemoveSandbox(ctx context.Context, req *workerv1.RemoveSandboxRequest) (*workerv1.RemoveSandboxResponse, error) {
-	if err := s.service.RemoveSandbox(ctx, req.GetContainerId()); err != nil {
+	if err := checkSandboxID(req.GetContainerId()); err != nil {
 		return nil, err
+	}
+	if err := s.service.RemoveSandbox(ctx, req.GetContainerId()); err != nil {
+		return nil, sandboxError(err)
 	}
 
 	return &workerv1.RemoveSandboxResponse{}, nil
+}
+
+// sandboxError maps sandboxmgr's sentinel errors onto gRPC codes the
+// orchestrator acts on: NotFound ends a cleanup, Unavailable is retried.
+func sandboxError(err error) error {
+	switch {
+	case errors.Is(err, sandboxmgr.ErrSandboxNotFound):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, sandboxmgr.ErrBusy):
+		return status.Error(codes.Unavailable, err.Error())
+	case errors.Is(err, sandboxmgr.ErrAtCapacity):
+		return status.Error(codes.ResourceExhausted, err.Error())
+	case errors.Is(err, runtimeClient.ErrInvalidSandboxID):
+		return status.Error(codes.InvalidArgument, err.Error())
+	default:
+		return err
+	}
 }
 
 func (s *WorkerGRPCServer) ListRunningSandboxes(ctx context.Context, req *workerv1.ListRunningSandboxesRequest) (*workerv1.ListRunningSandboxesResponse, error) {
@@ -85,7 +130,7 @@ func (s *WorkerGRPCServer) GetWorkerInfo(ctx context.Context, req *workerv1.GetW
 	}, nil
 }
 
-// ServeGRPC starts a gRPC server on the specified address and serves the provided WorkerServiceServer implementation. It returns an error if the server fails to start.
+// ServeGRPC starts a gRPC server on the specified address and serves the provided WorkerServiceServer implementation. It returns an error if the server fails to start, or ErrHeartbeatRefused (wrapped) if the orchestrator refused the heartbeats for good and the server was stopped.
 func ServeGRPC(address string, srv workerv1.WorkerServiceServer, opts ...grpc.ServerOption) error {
 	lis, err := net.Listen("tcp", address)
 	if err != nil {
@@ -96,21 +141,34 @@ func ServeGRPC(address string, srv workerv1.WorkerServiceServer, opts ...grpc.Se
 	// the actual bound port back from the listener — it is what the worker
 	// reports to the orchestrator and what the orchestrator dials.
 	boundPort := lis.Addr().(*net.TCPAddr).Port
-	log.Printf("worker gRPC listening on %s", lis.Addr().String())
+	slog.Info("worker gRPC listening", "address", lis.Addr().String())
 
 	grpcServer := grpc.NewServer(opts...)
 	workerv1.RegisterWorkerServiceServer(grpcServer, srv)
 
-	log.Printf("worker gRPC server started on %s", lis.Addr().String())
+	slog.Info("worker gRPC server started", "address", lis.Addr().String())
 	if workerSrv, ok := srv.(*WorkerGRPCServer); ok {
 		workerSrv.service.SetListenPort(boundPort)
 
 		heartbeatCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		log.Printf("starting heartbeat loop with interval: %s", heartbeatIntervalFromEnv())
-		go workerSrv.service.RunHeartbeat(heartbeatCtx, heartbeatIntervalFromEnv())
-		return grpcServer.Serve(lis)
+		slog.Info("starting heartbeat loop", "interval", heartbeatIntervalFromEnv().String())
+		heartbeatErr := make(chan error, 1)
+		go func() {
+			if err := workerSrv.service.RunHeartbeat(heartbeatCtx, heartbeatIntervalFromEnv()); err != nil {
+				// Sent before Stop, so Serve's return sees it.
+				heartbeatErr <- err
+				grpcServer.Stop()
+			}
+		}()
+		serveErr := grpcServer.Serve(lis)
+		select {
+		case err := <-heartbeatErr:
+			return err
+		default:
+			return serveErr
+		}
 	}
 
 	return grpcServer.Serve(lis)

@@ -1,7 +1,7 @@
 package app
 
 import (
-	"log"
+	"log/slog"
 	"os"
 	"time"
 
@@ -26,11 +26,42 @@ type Config struct {
 	HeartbeatTimeout time.Duration
 	// ReaperInterval is how often the worker-reaper periodic job runs.
 	ReaperInterval time.Duration
+	// SandboxLivenessTimeout is how long a hosting worker may keep heartbeating
+	// without listing a sandbox in its inventory before the sandbox is failed
+	// and cleaned up. Measured on the worker's heartbeats, not the
+	// orchestrator's clock. Defaults to 15s (three 5s worker heartbeats).
+	SandboxLivenessTimeout time.Duration
+	// SandboxWorkerLostTimeout is how long a worker must stay inactive before
+	// its sandboxes are failed: a machine gone for good, as opposed to one the
+	// orchestrator lost sight of. It must exceed the longest orchestrator or
+	// database outage, or network cut between the two, that should cost no
+	// sandbox: a worker whose heartbeats cannot get through is inactive for as
+	// long as the outage lasts, and its sandboxes are failed once it passes.
+	// Defaults to 2m.
+	SandboxWorkerLostTimeout time.Duration
+	// SandboxReaperInterval is how often the TTL/liveness sandbox reaper runs.
+	SandboxReaperInterval time.Duration
+	// SandboxCreateTimeout is how long a sandbox may stay pending or scheduling
+	// before the reaper fails it. A create job that gave up without leaving a
+	// trace (discarded, orchestrator lost) would otherwise hold its row until
+	// the sandbox's TTL. It must exceed the longest a healthy sandbox stays in
+	// those two statuses: the scheduling step of its job, 5 attempts of at most
+	// 5s of GetWorkerInfo calls with 2+4+8+16s of backoff between them (about a
+	// minute), plus the time its job waits in the queue under load. The
+	// CreateSandbox call (45s per attempt) comes after the sandbox is assigned
+	// and does not count: from then on liveness watches it. Defaults to 5m.
+	SandboxCreateTimeout time.Duration
 }
 
 const (
 	defaultHeartbeatTimeout = 15 * time.Second
 	defaultReaperInterval   = 10 * time.Second
+
+	defaultSandboxLivenessTimeout   = 15 * time.Second
+	defaultSandboxWorkerLostTimeout = 2 * time.Minute
+	defaultSandboxReaperInterval    = time.Minute
+
+	defaultSandboxCreateTimeout = 5 * time.Minute
 )
 
 func ConfigFromEnv() Config {
@@ -57,10 +88,18 @@ func ConfigFromEnv() Config {
 	if bindHost == "" {
 		if ip, err := tailscalepkg.IPv4(); err == nil {
 			bindHost = ip
-			log.Printf("auto-discovered tailscale address: %s", ip)
+			slog.Info("auto-discovered tailscale address", "address", ip)
 		} else {
-			log.Printf("tailscale address auto-discovery failed, falling back: %v", err)
+			slog.Warn("tailscale address auto-discovery failed, falling back", "err", err)
 		}
+	}
+
+	// Zero would fail the sandboxes of every worker the moment it is inactive,
+	// the very outage this timeout rides out. Not a way to turn the rule off.
+	workerLost := durationFromEnv("SANDBOX_WORKER_LOST_TIMEOUT", defaultSandboxWorkerLostTimeout)
+	if workerLost <= 0 {
+		slog.Warn("SANDBOX_WORKER_LOST_TIMEOUT must be positive, using the default", "default", defaultSandboxWorkerLostTimeout)
+		workerLost = defaultSandboxWorkerLostTimeout
 	}
 
 	return Config{
@@ -70,6 +109,10 @@ func ConfigFromEnv() Config {
 		OrchestratorGRPCBindHost: bindHost,
 		HeartbeatTimeout:         durationFromEnv("HEARTBEAT_TIMEOUT", defaultHeartbeatTimeout),
 		ReaperInterval:           durationFromEnv("REAPER_INTERVAL", defaultReaperInterval),
+		SandboxLivenessTimeout:   durationFromEnv("SANDBOX_LIVENESS_TIMEOUT", defaultSandboxLivenessTimeout),
+		SandboxWorkerLostTimeout: workerLost,
+		SandboxReaperInterval:    durationFromEnv("SANDBOX_REAPER_INTERVAL", defaultSandboxReaperInterval),
+		SandboxCreateTimeout:     durationFromEnv("SANDBOX_CREATE_TIMEOUT", defaultSandboxCreateTimeout),
 	}
 }
 

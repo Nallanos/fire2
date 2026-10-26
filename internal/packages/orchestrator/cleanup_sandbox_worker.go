@@ -3,18 +3,23 @@ package orchestrator
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/riverqueue/river"
 
-	workerv1 "github/nallanos/fire2/gen/worker/v1"
 	sandboxpkg "github/nallanos/fire2/internal/packages/sandbox"
 	workerpkg "github/nallanos/fire2/internal/packages/worker"
 )
 
-// CleanupSandboxWorker handles cleanup_sandbox jobs enqueued when CreateSandboxWorker
-// exhausts all attempts. It removes the container from the assigned worker (best-effort)
-// and marks the sandbox as failed with worker_id cleared.
+// CleanupSandboxWorker handles cleanup_sandbox jobs: it removes the sandbox from
+// its assigned worker, then moves it to the job's terminal status (failed by
+// default) and clears worker_id.
+//
+// The terminal transition only happens once the worker confirms the removal.
+// Until then the sandbox stays cleanup_pending and keeps its worker_id, and the
+// job returns an error so River retries. On the final attempt the link to the
+// worker is dropped and the sandbox ends up failed, whatever the requested
+// target, since its removal was never confirmed.
 type CleanupSandboxWorker struct {
 	river.WorkerDefaults[CleanupSandboxArgs]
 	sandboxRepo sandboxpkg.Repository
@@ -27,6 +32,7 @@ func NewCleanupSandboxWorker(sandboxRepo sandboxpkg.Repository, workerRepo worke
 
 func (w *CleanupSandboxWorker) Work(ctx context.Context, job *river.Job[CleanupSandboxArgs]) error {
 	sandboxID := job.Args.SandboxID
+	isFinalAttempt := job.Attempt >= job.MaxAttempts
 
 	sbx, err := w.sandboxRepo.GetByID(ctx, sandboxID)
 	if err != nil {
@@ -34,23 +40,28 @@ func (w *CleanupSandboxWorker) Work(ctx context.Context, job *river.Job[CleanupS
 	}
 
 	// Idempotent: if already fully cleaned up, do nothing.
-	if sbx.Status == sandboxpkg.StatusFailed || sbx.Status == sandboxpkg.StatusCleanedUp {
+	switch sbx.Status {
+	case sandboxpkg.StatusFailed, sandboxpkg.StatusStopped, sandboxpkg.StatusCleanedUp:
 		return nil
-	}
-
-	// Best-effort: ask the assigned worker to remove the container.
-	if sbx.WorkerID != nil {
-		w.removeFromWorker(ctx, sbx)
-	}
-
-	// Clear worker_id unconditionally.
-	if err := w.sandboxRepo.ClearWorker(ctx, sandboxID); err != nil {
-		log.Printf("cleanup: clear worker_id failed for sandbox=%s: %v", sandboxID, err)
 	}
 
 	target := sandboxpkg.StatusFailed
 	if job.Args.TargetStatus != "" {
 		target = sandboxpkg.Status(job.Args.TargetStatus)
+	}
+
+	if sbx.WorkerID != nil {
+		if err := removeSandboxOnWorker(ctx, w.workerRepo, *sbx.WorkerID, sandboxID); err != nil {
+			if !isFinalAttempt {
+				return fmt.Errorf("cleanup: sandbox=%s: %w", sandboxID, err)
+			}
+			slog.Error("cleanup: giving up on remote removal", "sandbox_id", sandboxID, "attempts", job.Attempt, "err", err)
+			target = sandboxpkg.StatusFailed
+		}
+
+		if err := w.sandboxRepo.ClearWorker(ctx, sandboxID); err != nil {
+			return fmt.Errorf("cleanup: clear worker_id for sandbox=%s: %w", sandboxID, err)
+		}
 	}
 
 	// Transition to the target terminal status regardless of which
@@ -63,25 +74,4 @@ func (w *CleanupSandboxWorker) Work(ctx context.Context, job *river.Job[CleanupS
 	}
 
 	return nil
-}
-
-func (w *CleanupSandboxWorker) removeFromWorker(ctx context.Context, sbx sandboxpkg.Sandbox) {
-	worker, err := w.workerRepo.Get(ctx, *sbx.WorkerID)
-	if err != nil {
-		log.Printf("cleanup: get worker %s for sandbox %s: %v — skipping remote remove", *sbx.WorkerID, sbx.ID, err)
-		return
-	}
-
-	addr := normalizeWorkerAddress(worker.Address, int32(worker.Port))
-	client, err := NewClient(ctx, addr)
-	if err != nil {
-		log.Printf("cleanup: connect worker %s for sandbox %s: %v — skipping remote remove", *sbx.WorkerID, sbx.ID, err)
-		return
-	}
-	defer client.Close()
-
-	_, err = client.RemoveSandbox(ctx, &workerv1.RemoveSandboxRequest{ContainerId: sbx.ID})
-	if err != nil {
-		log.Printf("cleanup: RemoveSandbox for sandbox=%s on worker=%s: %v — continuing", sbx.ID, *sbx.WorkerID, err)
-	}
 }

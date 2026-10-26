@@ -2,20 +2,19 @@ package worker
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 
 	orchestratorv1 "github/nallanos/fire2/gen/orchestrator/v1"
-	runtimeClient "github/nallanos/fire2/internal/packages/runtime"
+	"github/nallanos/fire2/internal/packages/sandboxmgr"
 
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// sandboxEventPollInterval is how often Run samples every running sandbox's
-// instance info. Firecracker has no push-based event stream like Docker's —
-// this is a poll loop, not a reconnect delay.
-const sandboxEventPollInterval = 2 * time.Second
+// eventRequestTimeout bounds one IngestSandboxEvent call, so a slow
+// orchestrator cannot hold back the next state changes for long.
+const eventRequestTimeout = 3 * time.Second
 
 type EventReporter struct {
 	client   orchestratorv1.OrchestratorServiceClient
@@ -23,57 +22,46 @@ type EventReporter struct {
 	worker   *WorkerService
 }
 
-// NewEventReporter builds a reporter that periodically samples every sandbox
-// tracked by worker (see WorkerService.RunningSandboxClients) and forwards
-// its instance state to the orchestrator.
+// NewEventReporter builds a reporter that forwards every sandbox state change
+// of worker's sandbox manager to the orchestrator.
 func NewEventReporter(client orchestratorv1.OrchestratorServiceClient, workerID string, worker *WorkerService) *EventReporter {
 	return &EventReporter{client: client, workerID: workerID, worker: worker}
 }
 
-// Run polls every running sandbox's instance info once per
-// sandboxEventPollInterval and reports it to the orchestrator, until ctx is
-// canceled. A single sandbox failing to report (e.g. a VM that just exited)
-// only logs and is skipped — it never stops the loop or affects the others.
+// Run forwards state changes until ctx is canceled. Delivery is best-effort:
+// a failed send is logged and dropped, never retried. The heartbeat
+// inventory carries every sandbox's state, so the orchestrator converges
+// anyway; events only make it converge sooner.
 func (r *EventReporter) Run(ctx context.Context) {
-	ticker := time.NewTicker(sandboxEventPollInterval)
-	defer ticker.Stop()
+	changes := r.worker.sandboxes.Events()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			r.reportAll(ctx)
+		case change := <-changes:
+			r.report(ctx, change)
 		}
 	}
 }
 
-func (r *EventReporter) reportAll(ctx context.Context) {
-	for sandboxID, client := range r.worker.RunningSandboxClients() {
-		event, err := r.instanceInfoEvent(ctx, client)
-		if err != nil {
-			log.Printf("event reporter: sandbox %s: describe instance info: %v", sandboxID, err)
-			continue
-		}
-		if _, err := r.client.IngestSandboxEvent(ctx, event); err != nil {
-			log.Printf("event reporter: sandbox %s: ingest event: %v", sandboxID, err)
-		}
+func (r *EventReporter) report(ctx context.Context, change sandboxmgr.StateChange) {
+	info, err := r.worker.GetWorkerInfo(ctx)
+	if err != nil || info.FencingToken <= 0 {
+		// Not registered yet: the orchestrator would reject unfenced events.
+		return
 	}
-}
 
-// instanceInfoEvent samples client's current instance info and wraps it into
-// a SandboxEvent ready to send to the orchestrator (event id, worker id and
-// timestamp are this reporter's job, not the runtime client's).
-func (r *EventReporter) instanceInfoEvent(ctx context.Context, client *runtimeClient.Client) (*orchestratorv1.SandboxEvent, error) {
-	event, err := client.GetMetrics(ctx)
+	rctx, cancel := context.WithTimeout(ctx, eventRequestTimeout)
+	defer cancel()
+	_, err = r.client.IngestSandboxEvent(rctx, &orchestratorv1.SandboxEvent{
+		Id:           uuid.NewString(),
+		SandboxId:    change.SandboxID,
+		WorkerId:     r.workerID,
+		State:        change.State,
+		OccurredAt:   timestamppb.New(change.At),
+		FencingToken: info.FencingToken,
+	})
 	if err != nil {
-		return nil, err
+		slog.Error("event reporter: ingest sandbox event failed", "sandbox_id", change.SandboxID, "state", change.State.String(), "err", err)
 	}
-
-	return &orchestratorv1.SandboxEvent{
-		Id:         uuid.NewString(),
-		SandboxId:  event.SandboxId,
-		WorkerId:   r.workerID,
-		State:      event.State,
-		OccurredAt: timestamppb.New(time.Now().UTC()),
-	}, nil
 }
